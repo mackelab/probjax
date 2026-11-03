@@ -404,3 +404,28 @@ def test_fit_warns_when_the_loss_becomes_non_finite():
             num_steps=3,
         )
     assert np.all(jnp.isnan(result.losses))
+
+
+def test_stream_history_stacks_metrics_and_stops_early():
+    """Stream infos are stacked once at the end (host side), metrics included."""
+
+    def loss_fn(params, rng, batch):
+        del rng
+        value = jnp.mean((batch - params["w"]) ** 2)
+        return value, {"value": value, "pair": jnp.stack([value, 2 * value])}
+
+    batches = [jnp.full((4, 2), float(i)) for i in range(10)]
+    result = fit(
+        loss_fn,
+        {"w": jnp.zeros(2)},
+        jax.random.key(0),
+        batches,
+        num_steps=10,
+        learning_rate=1e-2,
+        callback=lambda state, info: int(state.step) < 7,
+    )
+    assert result.losses.shape == (7,)
+    assert result.losses.dtype == jnp.float32
+    assert result.metrics["pair"].shape == (7, 2)
+    assert jnp.array_equal(result.metrics["value"], result.losses)
+    assert jnp.allclose(result.metrics["pair"][:, 1], 2 * result.losses)
