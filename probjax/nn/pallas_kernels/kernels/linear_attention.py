@@ -200,19 +200,27 @@ def _linear_attention_chunked_core(
     )
 
     f32 = jnp.float32
-    chunk_kv = jnp.einsum("bjncf,bjncd->bjnfd", kc, vc, preferred_element_type=f32)
+    # float32 inputs use full-precision dots: on GPU the default (TF32) costs
+    # ~3 mantissa digits, and the feature-map backward (softmax/relu of +/-
+    # halves) cancels strongly in dk -- with TF32 its relative error grows to
+    # ~8e-2 at L=8192 vs ~5e-4 here. On an RTX 3090 this costs <= ~10% time.
+    precision = jax.lax.Precision.HIGHEST if compute_dtype == f32 else None
+    einsum = functools.partial(
+        jnp.einsum, preferred_element_type=f32, precision=precision
+    )
+    chunk_kv = einsum("bjncf,bjncd->bjnfd", kc, vc)
     total = jnp.sum(chunk_kv, axis=2)
     # Exclusive prefix sum: state entering chunk n (excluding h0).
     prefix = jnp.cumsum(chunk_kv, axis=2) - chunk_kv
 
     q32 = qc.astype(f32)
-    inter = jnp.einsum("bjgncf,bjgfd->bjgncd", q32, state0) + jnp.einsum(
+    inter = einsum("bjgncf,bjgfd->bjgncd", q32, state0) + einsum(
         "bjgncf,bjnfd->bjgncd", q32, prefix
     )
-    scores = jnp.einsum("bjgncf,bjnsf->bjgncs", qc, kc, preferred_element_type=f32)
+    scores = einsum("bjgncf,bjnsf->bjgncs", qc, kc)
     causal = jnp.tril(jnp.ones((chunk, chunk), dtype=bool))
     scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
-    intra = jnp.einsum("bjgncs,bjnsd->bjgncd", scores, vc, preferred_element_type=f32)
+    intra = einsum("bjgncs,bjnsd->bjgncd", scores, vc)
     output = (inter + intra).astype(dtype)
     output = output.reshape(batch, num_heads, padded, value_dim)[:, :, :seq_len]
     final_state = state0 + total[:, :, None]
@@ -533,12 +541,14 @@ def residual_linear_attention(
 
     ``implementation``:
 
-    * ``"auto"`` -- the Pallas kernel on GPU when a chunk fits in shared
-      memory (backward: chunked XLA VJP), otherwise the chunked XLA form
-      (CPU, ``head_dim=128`` on GPU, unequal head dims, ragged lengths).
-    * ``"pallas"`` -- the Pallas kernel (interpret mode on CPU).
-    * ``"chunked"`` -- chunk-parallel pure JAX/XLA, any backend and length.
-    * ``"scan"`` -- the per-token ``lax.scan`` reference.
+    * ``"auto"`` / ``"chunked"`` -- chunk-parallel pure JAX/XLA (any backend,
+      length and head dim). On an RTX 3090 it beats the Pallas forward by
+      1.4-2.5x for L >= 2048 (cuBLAS batched matmuls vs one Triton program
+      per head), so it is the default on GPU as well as CPU.
+    * ``"pallas"`` -- the Pallas kernel (interpret mode on CPU); its backward
+      is the VJP of the chunked form.
+    * ``"scan"`` -- the per-token ``lax.scan`` reference (slow; its VJP stores
+      every ``[2D, D]`` state).
     """
     if implementation not in ("auto", "pallas", "chunked", "scan"):
         raise ValueError(
@@ -547,14 +557,7 @@ def residual_linear_attention(
     kwargs = dict(window_size=window_size, feature_map=feature_map)
     if implementation == "scan":
         return residual_linear_attention_scan(q, k, v, h0, **kwargs)
-    use_pallas = implementation == "pallas" or (
-        implementation == "auto"
-        and jax.default_backend() == "gpu"
-        and q.shape[2] % chunk_size == 0
-        and k.shape[-1] == q.shape[-1] == v.shape[-1]
-        and _gpu_chunk_size(q, v, chunk_size) is not None
-    )
-    if use_pallas:
+    if implementation == "pallas":
         return residual_linear_attention_pallas(
             q, k, v, h0, chunk_size=chunk_size, **kwargs
         )

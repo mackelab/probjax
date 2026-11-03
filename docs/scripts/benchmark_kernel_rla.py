@@ -317,7 +317,8 @@ def bench_peak(rows, cases, chunk):
             env=env,
             cwd=Path(__file__).resolve().parents[2],
         )
-        result = dict(error=proc.stderr.strip().splitlines()[-1][:300])
+        tail = (proc.stderr.strip().splitlines() or ["no output"])[-1]
+        result = dict(error=tail[:300])
         for line in proc.stdout.splitlines():
             if line.startswith("RESULT "):
                 result = json.loads(line[7:])

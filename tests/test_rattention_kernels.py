@@ -154,12 +154,12 @@ def test_chunked_bfloat16_close_to_float32_reference(feature_map):
         assert _rel(actual_grad, expected_grad) < 3e-2
 
 
-def test_auto_uses_chunked_off_gpu_and_rejects_unknown_implementation():
+def test_auto_uses_chunked_and_rejects_unknown_implementation():
     inputs = _inputs(seq_len=24)
     auto = residual_linear_attention(*inputs, window_size=2, chunk_size=8)
     chunked = residual_linear_attention_chunked(*inputs, window_size=2, chunk_size=8)
-    if not _on_gpu:
-        np.testing.assert_array_equal(auto[0], chunked[0])
+    np.testing.assert_array_equal(auto[0], chunked[0])
+    np.testing.assert_array_equal(auto[1], chunked[1])
     with pytest.raises(ValueError, match="implementation"):
         residual_linear_attention(*inputs, window_size=2, implementation="nope")
 
@@ -240,7 +240,7 @@ def test_gpu_pallas_forward_and_gradients_match_scan(feature_map, num_kv_heads):
     assert _rel(actual[0], expected[0]) < 2e-3
     assert _rel(actual[1], expected[1]) < 2e-3
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
-        assert _rel(actual_grad, expected_grad) < 2e-2
+        assert _rel(actual_grad, expected_grad) < 2e-3
     with _exact:
         actual_grads = _grads(residual_linear_attention_pallas, feature_map, inputs)
     for actual_grad, expected_grad in zip(actual_grads, expected_grads, strict=True):
@@ -255,3 +255,16 @@ def test_gpu_auto_falls_back_to_chunked_for_unsupported_head_dims():
         with _exact:
             expected, _ = residual_linear_attention_scan(*inputs, window_size=2)
         assert _rel(output, expected) < 2e-3
+
+
+@_requires_gpu
+def test_gpu_chunked_float32_gradients_accurate_at_default_precision():
+    # Regression: with TF32 dots the softmax feature-map backward cancels and
+    # dk had ~8e-2 relative error at L=8192; the chunked form now uses full
+    # fp32 dots for float32 inputs.
+    inputs = _inputs(num_heads=2, num_kv_heads=2, seq_len=4096, head_dim=32)
+    with _exact:
+        expected = _grads(residual_linear_attention_scan, FeatureMap.SOFTMAX, inputs)
+    actual = _grads(residual_linear_attention, FeatureMap.SOFTMAX, inputs)
+    for actual_grad, expected_grad in zip(actual, expected, strict=True):
+        assert _rel(actual_grad, expected_grad) < 5e-3
