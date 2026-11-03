@@ -292,10 +292,10 @@ def _linear_attention_kernel(
         start = chunk_index * chunk_size
         q_features = pallas_primitives.load(
             q_ref, (pl.dslice(start, chunk_size), slice(None))
-        )
+        ).astype(jnp.float32)
         k_features = pallas_primitives.load(
             k_ref, (pl.dslice(start, chunk_size), slice(None))
-        )
+        ).astype(jnp.float32)
         v = pallas_primitives.load(
             v_ref, (pl.dslice(start, chunk_size), slice(None))
         ).astype(jnp.float32)
@@ -326,8 +326,8 @@ def _kernel_smem_bytes(
     Fitted to measured requests on an RTX 3090 and checked against every
     failing (power-of-two) case for head_dim 16..128, chunk 16..128, float32
     and bfloat16: the model reproduces Triton's request byte-for-byte (e.g.
-    float32 head_dim 64: 160 KiB at chunk 64; bfloat16 head_dim 64: 120 KiB at
-    chunk 32 -- extra conversion buffers). At chunk 256 Triton drops
+    float32 head_dim 64: 160 KiB at chunk 64; bfloat16 head_dim 64 (features
+    stored in bfloat16): 144 KiB at chunk 64). At chunk 256 Triton drops
     pipelining and requests less, so the model is conservative there. The
     [feature_dim, head_dim] float32 state is resident for the whole program.
     """
@@ -341,7 +341,7 @@ def _kernel_smem_bytes(
             + (4 * feature_dim * head_dim)
         )
     per_row = (
-        2 * feature_dim + (4 if jnp.dtype(value_dtype) == jnp.float32 else 7) * head_dim
+        2 * feature_dim + (4 if jnp.dtype(value_dtype) == jnp.float32 else 3) * head_dim
     )
     return 4 * chunk_size * per_row + 4 * feature_dim * head_dim
 
@@ -402,11 +402,12 @@ def _linear_attention_pallas_impl(
         raise ValueError("h0 must have shape [batch, heads, 2 * head_dim, head_dim]")
 
     repeats = num_heads // num_kv_heads
-    # Feature maps are per-token, so apply them once outside the kernel (in
-    # float32, as the kernel previously did per chunk).
+    # Feature maps are per-token, so apply them once outside the kernel. They
+    # are computed in float32 and stored in the input dtype (as in the scan
+    # reference), so bf16 inputs do not materialize float32 [L, 2D] features.
     feature_fn = get_feature_map(feature_map).fwd
-    q_features = feature_fn(q.astype(jnp.float32))
-    k_features = feature_fn(k.astype(jnp.float32))
+    q_features = feature_fn(q)
+    k_features = feature_fn(k)
     feature_dim = q_features.shape[-1]
     if jax.default_backend() == "gpu" and not use_interpret_mode():
         # The chunk only tiles the recurrence; any divisor gives the same result.

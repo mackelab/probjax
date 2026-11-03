@@ -179,9 +179,12 @@ _MEASURED_SMEM = {
     (64, "float32", 64, None): 163840,
     (64, "float32", 128, None): 294912,
     (128, "float32", 16, None): 196608,
-    (32, "bfloat16", 128, None): 188416,
-    (64, "bfloat16", 32, None): 122880,
-    (128, "bfloat16", 16, None): 221184,
+    (32, "bfloat16", 128, None): 122880,
+    (64, "bfloat16", 64, None): 147456,
+    (64, "bfloat16", 128, None): 262144,
+    (16, "bfloat16", 128, "highest"): 131072,
+    (32, "bfloat16", 128, "highest"): 196608,
+    (64, "bfloat16", 128, "highest"): 327680,
     (16, "float32", 128, "highest"): 147456,
     (32, "float32", 128, "highest"): 229376,
     (64, "float32", 32, "highest"): 114688,
@@ -208,7 +211,15 @@ def test_gpu_fitted_chunk_compiles(precision, head_dim, dtype):
         output, state = residual_linear_attention_pallas(
             *inputs, window_size=2, chunk_size=128
         )
-    assert jnp.all(jnp.isfinite(output.astype(jnp.float32)))
+    assert output.dtype == dtype
+    reference = _inputs(seq_len=256, head_dim=head_dim)
+    with _exact:
+        expected, expected_state = residual_linear_attention_scan(
+            *reference, window_size=2
+        )
+    tol = 2e-3 if dtype == jnp.float32 else 2e-2
+    assert _rel(output, expected) < tol
+    assert _rel(state, expected_state) < tol
 
 
 @_requires_gpu
