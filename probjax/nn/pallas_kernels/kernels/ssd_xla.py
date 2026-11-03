@@ -33,7 +33,18 @@ import jax.numpy as jnp
 from jax import lax
 from jax.ad_checkpoint import checkpoint_name
 
-_DEFAULT_CHUNK_SIZE = 64
+# Tuned on an RTX 3090 / many-core x86 CPU (docs/benchmarks/kernel_ssd_*.json):
+# larger chunks feed bigger matmuls on GPU; on CPU 128 balances the C x C
+# intra-chunk work against the number of sequential chunk steps.
+_DEFAULT_CHUNK_SIZE = {"gpu": 256, "cpu": 128}
+_FALLBACK_CHUNK_SIZE = 256
+
+
+def default_chunk_size(backend: str | None = None) -> int:
+    backend = backend or jax.default_backend()
+    return _DEFAULT_CHUNK_SIZE.get(backend, _FALLBACK_CHUNK_SIZE)
+
+
 _STATES_NAME = "ssd_chunk_states"
 
 
@@ -62,10 +73,10 @@ def ssd_chunked(
     log_alpha: jax.Array,
     h0: Optional[jax.Array] = None,
     *,
-    chunk_size: int = _DEFAULT_CHUNK_SIZE,
+    chunk_size: int | None = None,
     precision: lax.Precision | str | None = lax.Precision.HIGHEST,
     inter_chunk: Literal["scan", "matmul"] = "scan",
-    remat: Literal["states", "none", "full"] = "states",
+    remat: Literal["full", "states", "none"] = "full",
     return_final_state: bool = False,
 ):
     """Chunked SSD in pure JAX.
@@ -75,22 +86,27 @@ def ssd_chunked(
         v: ``[B, H, L, dv]`` with ``H % G == 0``.
         log_alpha: ``[B, H, L]`` per-step log decay.
         h0: optional initial state ``[B, H, dk, dv]``.
-        chunk_size: tokens per chunk (clipped to ``L``).
+        chunk_size: tokens per chunk (clipped to ``L``); default
+            :func:`default_chunk_size` (256 on GPU, 128 on CPU).
         precision: matmul precision (default ``HIGHEST``: true fp32 on GPU,
             no TF32).
         inter_chunk: ``"scan"`` (sequential over chunks, O(nc) work) or
             ``"matmul"`` (dense ``nc x nc`` decay matmul, O(nc^2) work but no
             sequential dependency).
-        remat: what reverse mode keeps from the forward pass. ``"states"``
-            saves only the chunk-boundary states ``[B, H, L/C, dk, dv]`` and
-            recomputes the intra-chunk ``C x C`` blocks in the backward;
-            ``"full"`` saves nothing but the inputs (recomputes everything,
-            like the Pallas kernel); ``"none"`` is plain autodiff.
+        remat: what reverse mode keeps from the forward pass. ``"full"``
+            (default) saves only the inputs and recomputes the forward in the
+            backward, like the Pallas kernel -- measured within ~3% of plain
+            autodiff on GPU, and no slower than ``"states"``;
+            ``"states"`` saves the chunk-boundary states ``[B, H, L/C, dk,
+            dv]`` and recomputes the intra-chunk blocks; ``"none"`` is plain
+            autodiff (stores every intermediate).
         return_final_state: also return ``H_{L-1}`` ``[B, H, dk, dv]``.
 
     Returns:
         ``o`` ``[B, H, L, dv]`` (dtype of ``v``), or ``(o, final_state)``.
     """
+    if chunk_size is None:
+        chunk_size = default_chunk_size()
     impl = functools.partial(
         _ssd_chunked_impl,
         chunk_size=chunk_size,

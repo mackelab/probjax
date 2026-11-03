@@ -241,8 +241,10 @@ def test_ssd_pallas_multi_chunk_matches_reference_gpu(shape):
         assert _rel(g, r) < (2e-2 if name == "log_alpha" else 5e-3), name
 
 
-def test_ssdcell_single_head_runs_on_gpu():
-    _requires_accelerator()
+def test_ssdcell_single_head_runs_on_any_backend():
+    # SSDCell defaults to num_heads=1, which the Triton kernel rejects; it used
+    # to raise on CPU ("requires an accelerator") and on GPU ("Reference
+    # fallback on GPU is disabled"). It now runs through the chunked XLA path.
     from flax import nnx
 
     from probjax.nn.layers.ssm import SSDCell
@@ -252,3 +254,5 @@ def test_ssdcell_single_head_runs_on_gpu():
     y = cell(x)
     assert y.shape == x.shape
     assert bool(jnp.all(jnp.isfinite(y)))
+    g = jax.grad(lambda x: jnp.sum(cell(x) ** 2))(x)
+    assert bool(jnp.all(jnp.isfinite(g)))
