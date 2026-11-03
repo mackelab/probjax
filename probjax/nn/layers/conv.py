@@ -165,6 +165,7 @@ class ConvBlock(nnx.Module):
             norm_cls(
                 in_features,
                 rngs=rngs,
+                **filter_precision_kwargs(norm_cls, dtype=dtype),
             )
             if norm_cls is not None
             else None
@@ -416,6 +417,9 @@ class ResnetBlock(nnx.Module):
             use_bias=False,
             kernel_init=identity_1x1,
             rngs=rngs,
+            **filter_precision_kwargs(
+                nnx.Conv, dtype=dtype, param_dtype=param_dtype, precision=precision
+            ),
         )
 
         if self.dropout_rate > 0:
@@ -501,6 +505,7 @@ class SpatialSelfAttention(nnx.Module):
         self.norm = norm_cls(
             in_features,
             rngs=rngs,
+            **filter_precision_kwargs(norm_cls, dtype=dtype),
         )
         self.attn = mha_cls(
             num_heads=num_heads,
