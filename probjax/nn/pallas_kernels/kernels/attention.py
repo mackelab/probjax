@@ -56,6 +56,7 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
+from .attention_xla import use_xla_attention, xla_attention
 
 
 def pallas_load(ref, idx, *, mask=None, other=None):
@@ -2235,6 +2236,22 @@ def mha(
     if diff_mode not in ("reverse", "forward"):
         raise ValueError(
             f"diff_mode must be 'reverse' or 'forward', got {diff_mode!r}."
+        )
+
+    # CPU: the Triton kernels only run in (very slow) Pallas interpret mode
+    # there, so use the XLA implementation unless interpret mode was requested.
+    if use_xla_attention(q, interpret):
+        return xla_attention(
+            q,
+            k,
+            v,
+            mask=mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            diff_mode=diff_mode,
         )
 
     # The kernels tile Q and KV with power-of-two blocks and do not mask a

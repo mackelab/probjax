@@ -65,6 +65,7 @@ from .attention import (
     pallas_load,
     pallas_store,
 )
+from .attention_xla import use_xla_attention, xla_attention
 
 
 def _pad_to_multiple(x: jax.Array, axis: int, multiple: int) -> jax.Array:
@@ -584,6 +585,43 @@ def _make_mla_custom_vjp(
     return _mla
 
 
+def _xla_mla(
+    q, cache, wk, wv, *, mask, bias, rng, sm_scale, dropout_rate, dropout_impl
+):
+    """CPU path: XLA attention over the shared latent, without Pallas.
+
+    The latent is used as a single shared KV head (GQA with one KV head), so
+    the absorbed form never repeats the cache across heads.  With up-projections
+    the cheaper of two exact factorizations is chosen by FLOP count:
+
+    * materialize ``K = C W_K^T``, ``V = C W_V^T`` per head and attend, or
+    * absorb ``W_K`` into the queries (``q W_K`` attends over ``C``) and apply
+      ``W_V`` to the latent-space output -- cheaper when the query length is
+      small relative to the cache (decoding) or the latent is narrow.
+    """
+    common = dict(
+        mask=mask,
+        bias=bias,
+        rng=rng,
+        sm_scale=sm_scale,
+        dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
+    )
+    shared = cache[:, :, None, :]  # [B, S, 1, R]
+    if wk is None:
+        return xla_attention(q, shared, shared, **common)
+    q_len, kv_len, rank = q.shape[1], cache.shape[1], cache.shape[-1]
+    dk, dv = wk.shape[1], wv.shape[1]
+    materialized_cost = kv_len * rank * (dk + dv) + q_len * kv_len * (dk + dv)
+    absorbed_cost = q_len * rank * (dk + dv) + 2 * q_len * kv_len * rank
+    if absorbed_cost < materialized_cost:
+        q_lat = jnp.einsum("bqhd,hdr->bqhr", q, wk)
+        o_lat = xla_attention(q_lat, shared, shared, **common)
+        return jnp.einsum("bqhr,hdr->bqhd", o_lat, wv)
+    key, value = _materialize_kv(cache, wk, wv, q.shape[-2])
+    return xla_attention(q, key, value, **common)
+
+
 def mla(
     q: jax.Array,
     cache: jax.Array,
@@ -654,8 +692,19 @@ def mla(
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
 
-    if jax.default_backend() == "cpu":
-        interpret = True
+    if use_xla_attention(q, interpret):
+        return _xla_mla(
+            q,
+            cache,
+            wk,
+            wv,
+            mask=mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
 
     fn = _make_mla_custom_vjp(
         mask_treedef=mask_treedef,
