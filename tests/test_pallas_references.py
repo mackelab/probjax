@@ -151,6 +151,44 @@ def _requires_accelerator():
         pytest.skip("requires an accelerator backend")
 
 
+@pytest.mark.parametrize("seq", [48, 100, 192, 300])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
+def test_mha_unaligned_seq_len_matches_reference_gpu(seq, causal, dtype):
+    """Lengths that are not a multiple of the tile used to read past K/V (NaN)."""
+    _requires_accelerator()
+    ks = jax.random.split(jax.random.key(seq), 4)
+    q, k, v = (jax.random.normal(kk, (2, seq, 2, 64), dtype) for kk in ks[:3])
+    g = jax.random.normal(ks[3], (2, seq, 2, 64))
+    mask = pk.CausalMask() if causal else None
+
+    def loss(fn, q, k, v):
+        return jnp.sum(fn(q, k, v).astype(jnp.float32) * g)
+
+    def kernel(q, k, v):
+        return pk.mha(q, k, v, mask=mask, sm_scale=0.125)
+
+    def reference(q, k, v):
+        f32 = [x.astype(jnp.float32) for x in (q, k, v)]
+        return jax.nn.dot_product_attention(*f32, scale=0.125, is_causal=causal)
+
+    out = jax.jit(kernel)(q, k, v)
+    assert out.shape == q.shape
+    tol = 2e-2 if dtype == jnp.bfloat16 else 2e-3
+    assert jnp.allclose(out.astype(jnp.float32), reference(q, k, v), atol=tol)
+    grads = jax.grad(lambda *a: loss(kernel, *a), argnums=(0, 1, 2))(q, k, v)
+    ref_grads = jax.grad(lambda *a: loss(reference, *a), argnums=(0, 1, 2))(q, k, v)
+    for got, want in zip(grads, ref_grads, strict=True):
+        scale = jnp.abs(want).max()
+        assert jnp.abs(got.astype(jnp.float32) - want).max() <= 2 * tol * scale
+
+
+def test_mha_unaligned_seq_len_rejects_data_masks():
+    q = jnp.ones((2, 300, 2, 64), jnp.float32)
+    with pytest.raises(ValueError, match="block-aligned"):
+        pk.mha(q, q, q, mask=pk.SeqLenMask(jnp.array([300, 200])), interpret=True)
+
+
 def test_ssd_matches_reference_gpu():
     _requires_accelerator()
     key = jax.random.key(0)

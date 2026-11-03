@@ -35,6 +35,11 @@ from probjax.utils.jaxutils import where
 from ..attention_mask_bias import (
     AttentionBias,
     AttentionMask,
+    CausalLocalWindowMask,
+    CausalMask,
+    LocalWindowMask,
+    NoMask,
+    QKVLengthMask,
 )
 from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
@@ -2159,6 +2164,43 @@ mha_jvp_p = make_kernel_primitive(_MHA_JVP_SPEC, impl=_mha_jvp_prim_impl)
 mha_bwd_p = make_kernel_primitive(_MHA_BWD_SPEC, impl=_mha_bwd_prim_impl)
 
 
+def _aligned_seq_len(seq_len: int, *blocks: int) -> int:
+    """Smallest length >= ``seq_len`` that every effective tile divides.
+
+    Each kernel uses ``min(block, seq_len)`` as its tile, so a length is safe
+    when it is a multiple of the largest requested block, or (when shorter than
+    that block) a power of two that the smaller power-of-two blocks divide.
+    """
+    largest = max(blocks)
+    if seq_len >= largest:
+        return ceil_div(seq_len, largest) * largest
+    return _next_pow2(seq_len)
+
+
+# Masks whose value depends only on (q_idx, k_idx), so appending padded
+# positions does not change the mask on the original positions.
+_POSITION_ONLY_MASKS = (CausalMask, LocalWindowMask, CausalLocalWindowMask, NoMask)
+
+
+def _check_paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len) -> None:
+    reason = None
+    if dropout_rate > 0 and dropout_impl != "counter":
+        # Counter-based dropout hashes absolute positions, so padding is safe.
+        reason = f"dropout_impl={dropout_impl!r}"
+    elif mask is not None and type(mask) not in _POSITION_ONLY_MASKS:
+        reason = f"mask {type(mask).__name__}"
+    elif bias is not None:
+        reason = f"bias {type(bias).__name__}"
+    if reason is not None:
+        raise ValueError(
+            f"mha needs block-aligned sequence lengths (got q_len={q_len}, "
+            f"kv_len={kv_len}) when used with {reason}: the kernel would read past "
+            "the end of the sequence. Pad the inputs (and the mask/bias data) to a "
+            "multiple of the block size, or use "
+            "probjax.nn.layers.attention.flex_attention, which pads for you."
+        )
+
+
 def mha(
     q,
     k,
@@ -2194,6 +2236,48 @@ def mha(
         raise ValueError(
             f"diff_mode must be 'reverse' or 'forward', got {diff_mode!r}."
         )
+
+    # The kernels tile Q and KV with power-of-two blocks and do not mask a
+    # partial last tile, so unaligned sequence lengths would read past the end
+    # of K/V. Pad to aligned lengths and mask the padded keys instead.
+    q_len, kv_len = int(q.shape[-3]), int(k.shape[-3])
+    q_pad = _aligned_seq_len(
+        q_len, block_sizes.block_q, block_sizes.block_q_dkv, block_sizes.block_q_dq
+    )
+    kv_pad = _aligned_seq_len(
+        kv_len, block_sizes.block_k, block_sizes.block_kv_dkv, block_sizes.block_kv_dq
+    )
+    if (q_pad, kv_pad) != (q_len, kv_len):
+        _check_paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len)
+
+        def _pad_seq(x, target):
+            widths = [(0, 0)] * x.ndim
+            widths[-3] = (0, target - x.shape[-3])
+            return jnp.pad(x, widths)
+
+        length_mask = QKVLengthMask(
+            q_length=q_pad, kv_length=kv_len, block_sparse=False
+        )
+        out = mha(
+            _pad_seq(q, q_pad),
+            _pad_seq(k, kv_pad),
+            _pad_seq(v, kv_pad),
+            mask=length_mask if mask is None else mask & length_mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            grid=grid,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+            diff_mode=diff_mode,
+        )
+        return lax.slice_in_dim(out, 0, q_len, axis=out.ndim - 3)
 
     # Flatten mask/bias pytrees: array leaves become regular traced args,
     # treedefs are truly static metadata.
