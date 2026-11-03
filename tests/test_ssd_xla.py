@@ -170,9 +170,10 @@ def test_ssd_rejects_unknown_implementation():
         ssd_mod.ssd(*args, implementation="triton")
 
 
-def test_ssd_gpu_unsupported_shape_falls_back_to_chunked(monkeypatch):
-    # Dispatch logic only (CPU-safe): pretend to be a GPU whose Triton kernel
-    # rejects the shape.
+def test_ssd_gpu_auto_uses_chunked(monkeypatch):
+    # Dispatch logic only (CPU-safe): on GPU the default is the chunked XLA
+    # path (faster than the Triton kernel); implementation="pallas" keeps the
+    # hard error for shapes the Triton kernel rejects.
     monkeypatch.setattr(ssd_mod.jax, "default_backend", lambda: "gpu")
     monkeypatch.setattr(
         ssd_mod, "_pallas_backend", lambda prefer_mosaic_gpu=None: "triton"
@@ -199,11 +200,12 @@ def test_ssd_gpu_unsupported_shape_falls_back_to_chunked(monkeypatch):
     "shape",
     [
         (2, 1, 1, 1000, 128, 128),  # SSDCell default heads=1, odd-ish L
+        (2, 2, 8, 1024, 128, 128),  # Pallas-supported shape, auto -> chunked
         (2, 2, 4, 300, 48, 40),  # dims not multiples of 64
         (1, 1, 2, 77, 64, 64),  # L not a multiple of 64
     ],
 )
-def test_ssd_gpu_unsupported_shapes_use_xla_fallback(shape):
+def test_ssd_gpu_default_dispatch_matches_reference(shape):
     _requires_accelerator()
     args, ct = _inputs(*shape)
     ref_out, ref_grads = _ref64(args, ct, chunked=True)
@@ -219,6 +221,7 @@ def test_ssd_gpu_unsupported_shapes_use_xla_fallback(shape):
     "shape",
     [
         (1, 1, 2, 512, 64, 64),
+        (2, 1, 1, 320, 64, 128),  # single head (was rejected), L % 256 != 0
         (1, 2, 4, 768, 64, 64),
         (2, 2, 8, 2048, 128, 128),
     ],

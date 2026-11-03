@@ -570,7 +570,7 @@ def test_ssd_gpu_supported_config_uses_pallas_kernel(monkeypatch):
     monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
     monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _fake_ssd)
 
-    out = ssd(q, k, v, log_alpha)
+    out = ssd(q, k, v, log_alpha, implementation="pallas")
 
     assert out.shape == v.shape
     assert jnp.all(out == 5.0)
@@ -640,4 +640,4 @@ def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch)
     monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _failing_ssd)
 
     with pytest.raises(RuntimeError, match="pallas launch failed"):
-        ssd(q, k, v, log_alpha)
+        ssd(q, k, v, log_alpha, implementation="pallas")

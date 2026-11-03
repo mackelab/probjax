@@ -95,8 +95,6 @@ def _gpu_supports_ssd_pallas_for_shape(
         return False
     if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
         return False
-    if pallas_backend == "triton" and num_heads < 2:
-        return False
     if seq_len <= 0 or num_groups <= 0 or num_heads <= 0 or dk <= 0 or dv <= 0:
         return False
     singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config(seq_len)
@@ -1051,14 +1049,16 @@ def ssd(
         h0: [batch_size, num_heads, dk, dv]
         implementation: ``None`` (auto), ``"pallas"`` or ``"xla"``.
 
-            * auto: the Pallas kernel on TPU and on GPU for shapes the Triton
-              kernel supports (``seq_len % 256 == 0``, ``dk, dv % 64 == 0``,
-              ``num_heads >= 2``); otherwise the pure-JAX chunked algorithm
+            * auto: the Pallas kernel on TPU; everywhere else the pure-JAX
+              chunked algorithm
               :func:`~probjax.nn.pallas_kernels.kernels.ssd_xla.ssd_chunked`
-              (always on CPU; any shape).
+              (any shape). On GPU it is faster than the Triton kernel for all
+              benchmarked shapes (RTX 3090: 1.2-1.4x forward, 1.4-2x
+              forward+backward) and exact fp32 instead of TF32; see
+              ``docs/benchmarks/kernel_ssd_gpu.json``.
             * ``"pallas"``: require the Pallas kernel; raises on CPU and for
-              GPU shapes the kernel does not support (the pre-fallback
-              behaviour).
+              GPU shapes the Triton kernel does not support (``seq_len % 64``,
+              ``dk % 64`` or ``dv % 64`` nonzero).
             * ``"xla"``: always use the chunked pure-JAX implementation.
 
     Returns:
@@ -1076,7 +1076,7 @@ def ssd(
     bs, ng, _, dk = q.shape
     _, nh, _, dv = v.shape
     backend = jax.default_backend()
-    if implementation == "xla" or (implementation is None and backend == "cpu"):
+    if implementation == "xla" or (implementation is None and backend != "tpu"):
         return ssd_chunked(q, k, v, log_alpha, h0)
     if backend == "cpu":
         raise RuntimeError(
@@ -1095,14 +1095,12 @@ def ssd(
         dv=dv,
         pallas_backend=pallas_backend,
     ):
-        if implementation is None:
-            return ssd_chunked(q, k, v, log_alpha, h0)
         raise RuntimeError(
             "ssd does not support this GPU Pallas configuration. "
             f"backend={pallas_backend!r}, seq_len={q.shape[2]}, num_groups={ng}, "
             f"num_heads={nh}, dk={dk}, dv={dv}. "
             "Reference fallback on GPU is disabled for implementation='pallas'; "
-            "use implementation=None to fall back to the chunked XLA path."
+            "use implementation=None or 'xla' for the chunked XLA path."
         )
 
     if h0 is None:

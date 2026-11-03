@@ -198,14 +198,16 @@ def test_ssd_matches_reference_gpu():
     v = jax.random.normal(ks[2], (2, 4, 256, 64))
     log_alpha = -jnp.abs(jax.random.normal(ks[3], (2, 4, 256)))
 
-    new = pk.ssd(q, k, v, log_alpha)
+    new = pk.ssd(q, k, v, log_alpha, implementation="pallas")
     reference = _ssd_reference(q, k, v, log_alpha)
     # The Triton kernel uses TF32 matmuls (~5e-4 relative error): compare
     # relative to the output scale rather than with a tight absolute atol.
     scale = jnp.max(jnp.abs(reference))
     assert jnp.max(jnp.abs(new - reference)) <= 5e-3 * scale
 
-    g_new = jax.grad(lambda v: jnp.sum(pk.ssd(q, k, v, log_alpha)))(v)
+    g_new = jax.grad(
+        lambda v: jnp.sum(pk.ssd(q, k, v, log_alpha, implementation="pallas"))
+    )(v)
     g_reference = jax.grad(lambda v: jnp.sum(_ssd_reference(q, k, v, log_alpha)))(v)
     scale = jnp.max(jnp.abs(g_reference))
     assert jnp.max(jnp.abs(g_new - g_reference)) <= 5e-3 * scale
