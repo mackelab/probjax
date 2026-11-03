@@ -402,6 +402,7 @@ def test_multitile_attention_jvp_with_bias_mask_dropout(causal, rate):
         assert jnp.allclose(x, y, atol=1e-5, rtol=2e-4)
 
 
+@pytest.mark.skipif(jax.default_backend() != "gpu", reason="needs the GPU kernels")
 @pytest.mark.parametrize("seq,dim", [(32, 128), (8, 256)])
 def test_mamba_gpu_multitile_dispatch_and_gradients(monkeypatch, seq, dim):
     """GPU tile dependencies must not rely on ordering separate programs."""
@@ -422,13 +423,14 @@ def test_mamba_gpu_multitile_dispatch_and_gradients(monkeypatch, seq, dim):
         lambda *xs: jnp.sum(mamba._mamba_scan_reference(*xs) ** 2),
         argnums=tuple(range(6)),
     )(*args)
-    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(mamba, "_pallas_backend", lambda: "triton")
 
     def forbidden(*args, **kwargs):
         raise AssertionError("multi-tile GPU call entered the unordered carry kernel")
 
-    monkeypatch.setattr(mamba, "_mamba_scan_op", forbidden)
+    # The TPU kernels carry state across grid programs; on GPU the
+    # sequence-loop kernels must be used instead.
+    monkeypatch.setattr(mamba, "_loop_forward_pallas", forbidden)
+    monkeypatch.setattr(mamba, "_loop_backward_pallas", forbidden)
 
     def scan(*xs):
         return mamba.compute_mamba_scan(*xs, seq_tile_size=8, dim_tile_size=128)
