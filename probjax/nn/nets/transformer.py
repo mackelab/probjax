@@ -377,7 +377,9 @@ class Transformer(nnx.Module):
         as is. Afterwards both models compute the same function.
         """
         if not self.scan_layers or other.scan_layers:
-            raise ValueError("load_unrolled copies an unrolled model into a scanned one")
+            raise ValueError(
+                "load_unrolled copies an unrolled model into a scanned one"
+            )
         layer_states = [
             nnx.state(_TransformerLayer(**other._layer_parts(i)))
             for i in range(other.num_layers)

@@ -10,9 +10,9 @@ Run from the repository root::
 Every row reports, next to the steady-state time, the cost of getting there:
 ``trace_s`` (Python tracing + lowering to StableHLO), ``compile_s`` (trace +
 XLA compile) and XLA's static memory plan (``xla_temp_mb`` / ``xla_arg_mb`` /
-``xla_out_mb`` from ``compiled.memory_analysis()``). ``--peak`` re-runs the
-headline cases in a fresh subprocess and records the device's
-``peak_bytes_in_use`` (GPU only).
+``xla_out_mb`` from ``compiled.memory_analysis()``). The ``peaks`` suite
+(and ``--peak`` for ``scan_remat``) re-runs cases in a fresh subprocess and
+records the device's ``peak_bytes_in_use`` (GPU only).
 
 Suites:
 
@@ -28,6 +28,9 @@ Suites:
   call on the same model (re-tracing / re-compiling).
 * ``remat`` -- memory/time of the train step with ``jax.checkpoint`` around
   the whole loss vs none, and with parameter/optimizer buffer donation.
+* ``scan_remat`` -- train step of a deep (12/24-layer, width 512) Transformer /
+  DiffusionTransformer with the opt-in ``scan_layers`` / ``remat_policy``.
+* ``peaks`` -- device peak memory of headline cases (GPU).
 * ``moe`` -- dropless ``MoELayer`` implementations (owned by the gmm lane;
   kept for completeness, not run by default).
 
@@ -84,15 +87,19 @@ def _parse():
     parser.add_argument("--batch", type=int, default=None)
     parser.add_argument("--model-dim", type=int, default=256)
     parser.add_argument("--attention", nargs="+", default=None)
+    parser.add_argument("--models", nargs="+", default=["transformer", "diffusion"])
     parser.add_argument("--layers", type=int, nargs="+", default=[12, 24])
     parser.add_argument("--scan-tokens", type=int, default=None)
     parser.add_argument("--scan-batch", type=int, default=None)
     parser.add_argument("--cells", nargs="+", default=["mamba", "ssd", "lru"])
     parser.add_argument("--repeats", type=int, default=7)
     parser.add_argument(
+        "--append", action="store_true", help="add rows to an existing --output"
+    )
+    parser.add_argument(
         "--peak",
         action="store_true",
-        help="also measure the device peak of headline cases in subprocesses",
+        help="device peak (fresh subprocess) of scan_remat cases; see also the peaks suite",
     )
     # Internal: run one case in this (fresh) process and print its peak.
     parser.add_argument("--peak-case", type=str, default=None, help=argparse.SUPPRESS)
@@ -496,7 +503,7 @@ SCAN_REMAT_VARIANTS = (
 def suite_scan_remat(rows, args):
     """Opt-in ``scan_layers`` / ``remat_policy`` of a deep Transformer."""
     gpu = args.device == "gpu"
-    for model in ("transformer", "diffusion"):
+    for model in args.models:
         for attention in args.attention or ["probjax_default", "probjax_flex"]:
             if not gpu and attention != "probjax_default":
                 continue
@@ -641,6 +648,12 @@ def main():
     rows: list[dict] = []
     config = {k: v for k, v in vars(args).items() if k != "peak_case"}
     config["output"] = str(args.output)
+    if args.append and args.output.exists():
+        # Several (lock-sized) invocations accumulate into one results file.
+        previous = json.loads(args.output.read_text())
+        rows.extend(previous["results"])
+        runs = previous["config"].get("runs", [previous["config"]])
+        config = dict(runs=[*runs, config])
     suites = dict(
         transformer=lambda: suite_transformer(rows, args),
         diffusion=lambda: suite_transformer(rows, args, diffusion=True),
@@ -650,12 +663,10 @@ def main():
         train_loop=lambda: suite_train_loop(rows, args),
         remat=lambda: suite_remat(rows, args),
         scan_remat=lambda: suite_scan_remat(rows, args),
+        peaks=lambda: headline_peaks(rows, args),
     )
     for suite in args.suites:
         suites[suite]()
-        write_results(args.output, config, rows)
-    if args.peak:
-        headline_peaks(rows, args)
         write_results(args.output, config, rows)
 
 
