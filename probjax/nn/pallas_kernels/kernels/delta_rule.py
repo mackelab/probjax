@@ -217,56 +217,140 @@ def _unit_lower_inverse(a: jax.Array, precision=None, base: int = 16) -> jax.Arr
     return inv[..., 0, :, :]
 
 
-def _solve_unit_lower(a, rhs, precision):
-    """Solves ``(I + a) x = rhs`` for strictly lower-triangular ``a``."""
+def _unit_lower_inv(a, precision):
+    """``(I + a)^{-1}`` for strictly lower-triangular ``a`` (explicit)."""
     c = a.shape[-1]
     if jax.default_backend() == "gpu" or (c > 16 and c & (c - 1)):
         # cuBLAS batched trsm is fast; also the fallback for odd chunk sizes.
         eye = jnp.eye(c, dtype=a.dtype)
         return lax.linalg.triangular_solve(
-            a + eye, rhs, left_side=True, lower=True, unit_diagonal=True
+            a + eye,
+            jnp.broadcast_to(eye, a.shape),
+            left_side=True,
+            lower=True,
+            unit_diagonal=True,
         )
-    inv = _unit_lower_inverse(a, precision)
-    return _ein("...ij,...jd->...id", inv, rhs, precision=precision)
+    return _unit_lower_inverse(a, precision)
 
 
-def _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision):
+def _chunk_gate(log_alpha, chunk_size):
+    """Within-chunk cumulative log gate ``g: [B, H, N, C]`` (fp32, <= 0)."""
+    b, h, seq = log_alpha.shape
+    la = log_alpha.astype(jnp.float32).reshape(b, h, seq // chunk_size, chunk_size)
+    return jnp.cumsum(la, axis=-1)
+
+
+def _causal_decay(g):
+    """``M_ij = exp(g_i - g_j)`` for ``j <= i``, else 0. ``g: [..., C]``."""
+    c = g.shape[-1]
+    idx = jnp.arange(c)
+    causal = idx[:, None] >= idx[None, :]
+    return jnp.exp(jnp.where(causal, g[..., :, None] - g[..., None, :], -jnp.inf))
+
+
+def _chunks(x, c):
+    b, h, seq = x.shape[:3]
+    return x.astype(jnp.float32).reshape(b, h, seq // c, c, *x.shape[3:])
+
+
+def _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision):
     """Chunk-local (parallel) quantities of the WY representation.
 
-    Inputs are ``[B, H, L, D]`` with ``L % chunk_size == 0``. Returns fp32
-    ``Wk, Wv, Kd, Qg: [B, H, N, C, D]``, ``P: [B, H, N, C, C]`` and
-    ``a: [B, H, N]``.
+    ``q, k: [B, H, L, Dk]``, ``v: [B, H, L, Dv]``, ``beta: [B, H, L]``,
+    ``g: [B, H, N, C]``. Returns fp32 ``Wk, Wv, Kd, Qg: [B, H, N, C, D]`` and
+    ``P, T: [B, H, N, C, C]`` with ``T = (I + A)^{-1}``.
     """
-    b, h, seq, dk = q.shape
-    dv = v.shape[-1]
     c = chunk_size
-    n = seq // c
-    f32 = lambda x: x.astype(jnp.float32)  # noqa: E731
-    qc = f32(q).reshape(b, h, n, c, dk)
-    kc = f32(k).reshape(b, h, n, c, dk)
-    vc = f32(v).reshape(b, h, n, c, dv)
-    bc = f32(beta).reshape(b, h, n, c)
-    g = jnp.cumsum(f32(log_alpha).reshape(b, h, n, c), axis=-1)  # <= 0, decreasing
-    g_last = g[..., -1]
-
+    qc, kc, vc, bc = (_chunks(x, c) for x in (q, k, v, beta))
+    m = _causal_decay(g)
     idx = jnp.arange(c)
     strict = idx[:, None] > idx[None, :]
-    causal = idx[:, None] >= idx[None, :]
-    diff = g[..., :, None] - g[..., None, :]  # g_i - g_j (<= 0 for j <= i)
-    decay_causal = jnp.exp(jnp.where(causal, diff, -jnp.inf))
-
     kk = _ein("bhncd,bhnsd->bhncs", kc, kc, precision=precision)
-    a_mat = jnp.where(strict, bc[..., :, None] * kk * decay_causal, 0.0)
-    rhs = jnp.concatenate(
-        [kc * (bc * jnp.exp(g))[..., None], vc * bc[..., None]], axis=-1
-    )
-    w = _solve_unit_lower(a_mat, rhs, precision)
-    wk, wv = w[..., :dk], w[..., dk:]
-    kd = kc * jnp.exp(g_last[..., None] - g)[..., None]
+    a_mat = jnp.where(strict, bc[..., :, None] * kk * m, 0.0)
+    t = _unit_lower_inv(a_mat, precision)
+    rk = kc * (bc * jnp.exp(g))[..., None]
+    rv = vc * bc[..., None]
+    wk = _ein("bhncs,bhnsd->bhncd", t, rk, precision=precision)
+    wv = _ein("bhncs,bhnsd->bhncd", t, rv, precision=precision)
+    kd = kc * jnp.exp(g[..., -1:] - g)[..., None]
     qg = qc * jnp.exp(g)[..., None]
-    qk = _ein("bhncd,bhnsd->bhncs", qc, kc, precision=precision)
-    p = qk * decay_causal
-    return wk, wv, kd, qg, p, jnp.exp(g_last)
+    p = _ein("bhncd,bhnsd->bhncs", qc, kc, precision=precision) * m
+    return wk, wv, kd, qg, p, t
+
+
+def _chunk_prep(q, k, v, g, beta, chunk_size, precision, use_pallas):
+    if use_pallas:
+        from . import delta_rule_pallas as _dp
+
+        if _dp.prep_supported(chunk_size, q.shape[-1], v.shape[-1]):
+            return _dp.chunk_prep(
+                q, k, v, g.reshape(beta.shape), beta, chunk=chunk_size,
+                precision=precision,
+            )  # fmt: skip
+    return _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision)
+
+
+def _chunk_prep_vjp(q, k, v, g, beta, t, cts, chunk_size, precision):
+    """Hand-written VJP of :func:`_chunk_prep_xla` given ``T = (I + A)^{-1}``.
+
+    Returns cotangents of ``(q, k, v, g, beta)`` (``g`` chunked, fp32).
+    """
+    d_wk, d_wv, d_kd, d_qg, d_p, d_a = cts
+    c = chunk_size
+    qc, kc, vc, bc = (_chunks(x, c) for x in (q, k, v, beta))
+    e = jnp.exp(g)
+    m = _causal_decay(g)
+    idx = jnp.arange(c)
+    strict = idx[:, None] > idx[None, :]
+    ein = functools.partial(_ein, precision=precision)
+    rk = kc * (bc * e)[..., None]
+    rv = vc * bc[..., None]
+    # W = T R
+    d_rk = ein("bhnsc,bhnsd->bhncd", t, d_wk)
+    d_rv = ein("bhnsc,bhnsd->bhncd", t, d_wv)
+    d_t = ein("bhncd,bhnsd->bhncs", d_wk, rk) + ein("bhncd,bhnsd->bhncs", d_wv, rv)
+    # T = (I + A)^-1  =>  dA = -T^T dT T^T (strictly lower part).
+    d_a_mat = -ein("bhnjc,bhnjs->bhncs", t, ein("bhncj,bhnsj->bhncs", d_t, t))
+    d_a_mat = jnp.where(strict, d_a_mat, 0.0)
+    kk = ein("bhncd,bhnsd->bhncs", kc, kc)
+    qk = ein("bhncd,bhnsd->bhncs", qc, kc)
+    d_kk = d_a_mat * bc[..., :, None] * m
+    d_pm = d_p * m
+    d_m = d_a_mat * bc[..., :, None] * kk + d_p * qk
+    dm_m = d_m * m
+    d_q = ein("bhncs,bhnsd->bhncd", d_pm, kc) + d_qg * e[..., None]
+    w_kd = jnp.sum(d_kd * kc, axis=-1) * jnp.exp(g[..., -1:] - g)
+    d_k = (
+        ein("bhncs,bhnsd->bhncd", d_kk + jnp.swapaxes(d_kk, -1, -2), kc)
+        + ein("bhncs,bhncd->bhnsd", d_pm, qc)
+        + d_rk * (bc * e)[..., None]
+        + d_kd * jnp.exp(g[..., -1:] - g)[..., None]
+    )
+    d_v = d_rv * bc[..., None]
+    rk_dot = jnp.sum(d_rk * kc, axis=-1)
+    d_beta = (
+        jnp.sum(d_a_mat * kk * m, axis=-1) + rk_dot * e + jnp.sum(d_rv * vc, axis=-1)
+    )
+    d_g = (
+        jnp.sum(dm_m, axis=-1)
+        - jnp.sum(dm_m, axis=-2)
+        + rk_dot * bc * e
+        + jnp.sum(d_qg * qc, axis=-1) * e
+        - w_kd
+    )
+    d_glast = jnp.sum(w_kd, axis=-1) + d_a * jnp.exp(g[..., -1])
+    d_g = d_g.at[..., -1].add(d_glast)
+
+    def unchunk(x, like):
+        return x.reshape(like.shape).astype(like.dtype)
+
+    return (
+        unchunk(d_q, q),
+        unchunk(d_k, k),
+        unchunk(d_v, v),
+        d_g,
+        unchunk(d_beta, beta),
+    )
 
 
 # ---- inter-chunk state pass: pure-JAX implementation ----------------------
@@ -324,13 +408,7 @@ def _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision):
     return dwk, du, dkd, dqg, dp, da
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=(7, 8))
-def _state_pass(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
-    o, _, s_fin = _state_pass_fwd_impl(wk, wv, kd, qg, p, a, s0, precision, use_pallas)
-    return o, s_fin
-
-
-def _state_pass_fwd_impl(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
+def _state_pass_fwd(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
     if use_pallas:
         from . import delta_rule_pallas as _dp
 
@@ -338,66 +416,72 @@ def _state_pass_fwd_impl(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
     return _state_pass_fwd_scan(wk, wv, kd, qg, p, a, s0, precision)
 
 
-def _state_pass_vjp_fwd(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
-    o, states, s_fin = _state_pass_fwd_impl(
-        wk, wv, kd, qg, p, a, s0, precision, use_pallas
-    )
-    return (o, s_fin), (wk, wv, kd, qg, p, a, states)
-
-
-def _state_pass_vjp_bwd(precision, use_pallas, res, cts):
-    wk, wv, kd, qg, p, a, states = res
-    do, ds_fin = cts
-    do = jnp.asarray(do, jnp.float32)
-    ds_fin = jnp.asarray(ds_fin, jnp.float32)
+def _state_pass_bwd(wk, kd, qg, p, a, do, ds_fin, precision, use_pallas):
     if use_pallas:
         from . import delta_rule_pallas as _dp
 
-        du, ds_after, ds0 = _dp.state_pass_bwd_seq(
-            wk, kd, qg, p, a, do, ds_fin, precision=precision
-        )
-    else:
-        du, ds_after, ds0 = _state_pass_bwd_scan(
-            wk, kd, qg, p, a, do, ds_fin, precision
-        )
-    grads = _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision)
-    return (*grads, ds0)
+        return _dp.state_pass_bwd_seq(wk, kd, qg, p, a, do, ds_fin, precision=precision)
+    return _state_pass_bwd_scan(wk, kd, qg, p, a, do, ds_fin, precision)
 
 
-_state_pass.defvjp(_state_pass_vjp_fwd, _state_pass_vjp_bwd)
+# ---- end-to-end chunked op with a hand-written, memory-lean VJP ------------
 
 
-# ---- memory-lean end-to-end VJP ------------------------------------------
+def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
+    g = _chunk_gate(log_alpha, chunk_size)
+    prep = _chunk_prep(q, k, v, g, beta, chunk_size, precision, use_pallas)
+    wk, wv, kd, qg, p, t = prep
+    a = jnp.exp(g[..., -1])
+    o, states, s_fin = _state_pass_fwd(wk, wv, kd, qg, p, a, h0, precision, use_pallas)
+    return o, s_fin, states, g, prep
 
 
-@functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7, 8))
-def _delta_core(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
-    prep = _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision)
-    o, _, s_fin = _state_pass_fwd_impl(*prep, h0, precision, use_pallas)
+@functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7, 8, 9))
+def _delta_core(
+    q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas, store_prep
+):
+    o, s_fin, *_ = _forward(
+        q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas
+    )
     return o, s_fin
 
 
-def _delta_core_fwd(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
-    prep = _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision)
-    o, states, s_fin = _state_pass_fwd_impl(*prep, h0, precision, use_pallas)
-    # Residuals: the inputs plus the L / C chunk-boundary states. Everything
-    # chunk-local is recomputed in the backward pass.
-    return (o, s_fin), (q, k, v, log_alpha, beta, states)
+def _delta_core_fwd(
+    q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas, store_prep
+):
+    o, s_fin, states, g, prep = _forward(
+        q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas
+    )
+    # Residuals: the inputs plus the L / C chunk-boundary states; the
+    # chunk-local WY quantities are recomputed in the backward pass unless
+    # ``store_prep`` (benchmark baseline that keeps them).
+    return (o, s_fin), (q, k, v, log_alpha, beta, states, prep if store_prep else None)
 
 
-def _delta_core_bwd(chunk_size, precision, use_pallas, res, cts):
-    q, k, v, log_alpha, beta, states = res
-    # The barrier stops XLA from CSE-ing this recompute with the forward prep
-    # (which would keep every chunk-local intermediate alive until here).
-    q, k, v, log_alpha, beta = lax.optimization_barrier((q, k, v, log_alpha, beta))
-    prep, prep_vjp = jax.vjp(
-        lambda *x: _chunk_prep(*x, chunk_size, precision), q, k, v, log_alpha, beta
+def _delta_core_bwd(chunk_size, precision, use_pallas, store_prep, res, cts):
+    q, k, v, log_alpha, beta, states, prep = res
+    do, ds_fin = cts
+    do = jnp.asarray(do, jnp.float32)
+    ds_fin = jnp.asarray(ds_fin, jnp.float32)
+    g = _chunk_gate(log_alpha, chunk_size)
+    if prep is None:
+        # The barrier stops XLA from CSE-ing this recompute with the forward
+        # prep (which would keep every chunk-local intermediate alive).
+        qb, kb, vb, gb, bb = lax.optimization_barrier((q, k, v, g, beta))
+        prep = _chunk_prep(qb, kb, vb, gb, bb, chunk_size, precision, use_pallas)
+    wk, wv, kd, qg, p, t = prep
+    a = jnp.exp(g[..., -1])
+    du, ds_after, ds0 = _state_pass_bwd(
+        wk, kd, qg, p, a, do, ds_fin, precision, use_pallas
     )
-    wk, wv, kd, qg, p, a = prep
-    d_wk, d_wv, d_kd, d_qg, d_p, d_a, d_h0 = _state_pass_vjp_bwd(
-        precision, use_pallas, (wk, wv, kd, qg, p, a, states), cts
+    cts_prep = _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision)
+    d_q, d_k, d_v, d_g, d_beta = _chunk_prep_vjp(
+        q, k, v, g, beta, t, cts_prep, chunk_size, precision
     )
-    return (*prep_vjp((d_wk, d_wv, d_kd, d_qg, d_p, d_a)), d_h0)
+    # g = cumsum(log_alpha) within chunks  =>  reverse cumsum.
+    d_la = jnp.flip(jnp.cumsum(jnp.flip(d_g, -1), -1), -1)
+    d_la = d_la.reshape(log_alpha.shape).astype(log_alpha.dtype)
+    return d_q, d_k, d_v, d_la, d_beta, ds0
 
 
 _delta_core.defvjp(_delta_core_fwd, _delta_core_bwd)
@@ -415,7 +499,7 @@ def _chunked_impl(
     qk_l2norm,
     precision,
     use_pallas,
-    lean=True,
+    store_prep=False,
 ):
     dtype = q.dtype
     q, k, v, log_alpha, beta, h0 = _prepare(q, k, v, log_alpha, beta, h0, qk_l2norm)
@@ -431,12 +515,10 @@ def _chunked_impl(
         q, k, v = (jnp.pad(x, cfg + ((0, 0),)) for x in (q, k, v))
         log_alpha = jnp.pad(log_alpha, cfg)
         beta = jnp.pad(beta, cfg)
-    h0 = h0.astype(jnp.float32)
-    if lean:
-        o, s_fin = _delta_core(q, k, v, log_alpha, beta, h0, c, precision, use_pallas)
-    else:  # store every chunk-local intermediate (benchmark baseline)
-        prep = _chunk_prep(q, k, v, log_alpha, beta, c, precision)
-        o, s_fin = _state_pass(*prep, h0, precision, use_pallas)
+    o, s_fin = _delta_core(
+        q, k, v, log_alpha, beta, h0.astype(jnp.float32), c, precision, use_pallas,
+        store_prep,
+    )  # fmt: skip
     o = o.reshape(b, h, seq + pad, dv)[:, :, :seq]
     return o.astype(dtype), s_fin
 

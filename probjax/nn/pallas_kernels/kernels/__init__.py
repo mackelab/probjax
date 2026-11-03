@@ -1,4 +1,10 @@
 from .attention import BlockSizes, mha
+from .delta_rule import (
+    gated_delta_rule,
+    gated_delta_rule_chunked,
+    gated_delta_rule_pallas,
+    gated_delta_rule_recurrent,
+)
 from .flash_attention3 import (
     TuningConfig,
     attention,
@@ -22,12 +28,6 @@ from .linear_attention import (
     right_shift_and_zero_pad,
 )
 from .mamba import compute_mamba_scan
-from .delta_rule import (
-    gated_delta_rule,
-    gated_delta_rule_chunked,
-    gated_delta_rule_pallas,
-    gated_delta_rule_recurrent,
-)
 from .ssd import (
     ssd,
     ssd_linear_scan,

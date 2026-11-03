@@ -218,3 +218,130 @@ def state_pass_bwd_seq(wk, kd, qg, p, a, do, ds_fin, *, precision=None, num_warp
         ds_after.reshape(b, h, n, dk, dv),
         ds0.reshape(b, h, dk, dv),
     )
+
+
+# --------------------------------------------------------------------------
+# Chunk-local prep (WY representation) -- fully parallel over (B*H, N)
+# --------------------------------------------------------------------------
+
+_SUB = 16  # row-block size of the block forward substitution
+
+
+def _prep_kernel(
+    q_ref, k_ref, v_ref, g_ref, b_ref,
+    wk_ref, wv_ref, kd_ref, qg_ref, p_ref, t_ref, *, chunk, precision,
+):  # fmt: skip
+    """One chunk: ``T = (I + A)^-1`` by 16-row block forward substitution, then
+    ``Wk = T (beta e^g K)``, ``Wv = T (beta V)``, ``Kd``, ``Qg`` and ``P``."""
+    nb = chunk // _SUB
+    f32 = jnp.float32
+    rows = jax.lax.broadcasted_iota(jnp.int32, (_SUB, _SUB), 0)
+    cols = jax.lax.broadcasted_iota(jnp.int32, (_SUB, _SUB), 1)
+    eye = (rows == cols).astype(f32)
+    g_last = _load(g_ref, (pl.ds(chunk - _SUB, _SUB),))
+    g_last = jnp.min(g_last)  # g is non-increasing within a chunk
+
+    def blk(ref, i):
+        return _load(ref, (pl.ds(i * _SUB, _SUB), slice(None)))
+
+    def vec(ref, i):
+        return _load(ref, (pl.ds(i * _SUB, _SUB),))
+
+    ks = [blk(k_ref, i) for i in range(nb)]
+    gs = [vec(g_ref, i) for i in range(nb)]
+    bs = [vec(b_ref, i) for i in range(nb)]
+
+    def decay(i, j):
+        d = gs[i][:, None] - gs[j][None, :]
+        if i == j:
+            d = jnp.where(rows >= cols, d, -jnp.inf)
+        return jnp.exp(d)
+
+    # A_ij = beta_i (k_i . k_j) exp(g_i - g_j), strictly lower-triangular.
+    a_blk = {}
+    for i in range(nb):
+        for j in range(i + 1):
+            kk = _dot(ks[i], ks[j].T, precision)
+            a = bs[i][:, None] * kk * decay(i, j)
+            if i == j:
+                a = jnp.where(rows > cols, a, 0.0)
+            a_blk[i, j] = a
+    # Diagonal blocks: row-by-row forward substitution (row r only reads rows < r).
+    t_blk = {}
+    for i in range(nb):
+        t = eye
+        a = a_blk[i, i]
+        for r in range(1, _SUB):
+            a_r = jnp.where(rows == r, a, 0.0)
+            t = t - _dot(a_r, t, precision)
+        t_blk[i, i] = t
+    # Off-diagonal blocks: T_ij = -T_ii sum_{j<=m<i} A_im T_mj.
+    for i in range(nb):
+        for j in range(i - 1, -1, -1):
+            acc = _dot(a_blk[i, j], t_blk[j, j], precision)
+            for m in range(j + 1, i):
+                acc = acc + _dot(a_blk[i, m], t_blk[m, j], precision)
+            t_blk[i, j] = -_dot(t_blk[i, i], acc, precision)
+    zero = jnp.zeros((_SUB, _SUB), f32)
+    for i in range(nb):
+        for j in range(nb):
+            _store(
+                t_ref,
+                (pl.ds(i * _SUB, _SUB), pl.ds(j * _SUB, _SUB)),
+                t_blk[i, j] if j <= i else zero,
+            )
+    # W = T R with R_k = beta e^g K, R_v = beta V.
+    rk = [ks[j].astype(f32) * (bs[j] * jnp.exp(gs[j]))[:, None] for j in range(nb)]
+    rv = [blk(v_ref, j).astype(f32) * bs[j][:, None] for j in range(nb)]
+    for i in range(nb):
+        wk = _dot(t_blk[i, 0], rk[0], precision)
+        wv = _dot(t_blk[i, 0], rv[0], precision)
+        for j in range(1, i + 1):
+            wk = wk + _dot(t_blk[i, j], rk[j], precision)
+            wv = wv + _dot(t_blk[i, j], rv[j], precision)
+        rows_i = (pl.ds(i * _SUB, _SUB), slice(None))
+        _store(wk_ref, rows_i, wk)
+        _store(wv_ref, rows_i, wv)
+        _store(kd_ref, rows_i, ks[i].astype(f32) * jnp.exp(g_last - gs[i])[:, None])
+        qi = blk(q_ref, i)
+        _store(qg_ref, rows_i, qi.astype(f32) * jnp.exp(gs[i])[:, None])
+        for j in range(nb):
+            pij = _dot(qi, ks[j].T, precision) * decay(i, j) if j <= i else zero
+            _store(p_ref, (pl.ds(i * _SUB, _SUB), pl.ds(j * _SUB, _SUB)), pij)
+
+
+def prep_supported(chunk: int, dk: int, dv: int) -> bool:
+    return chunk % _SUB == 0 and chunk <= 64 and supports_shape(chunk, dk, dv)
+
+
+@functools.partial(
+    jax.jit, static_argnames=("chunk", "precision", "num_warps", "num_stages")
+)
+def chunk_prep(q, k, v, g, beta, *, chunk, precision=None, num_warps=4, num_stages=1):
+    """Pallas chunk prep. ``q, k: [B,H,L,Dk]``, ``v: [B,H,L,Dv]``, ``g`` (the
+    within-chunk cumulative log gate) and ``beta: [B,H,L]`` (fp32).
+
+    Returns fp32 ``wk, wv, kd, qg: [B,H,N,C,D]``, ``p, t: [B,H,N,C,C]``.
+    """
+    b, h, seq, dk = q.shape
+    dv = v.shape[-1]
+    n = seq // chunk
+    prec = _kernel_precision(precision)
+    r4 = lambda x: x.reshape(b * h, n, chunk, x.shape[-1])  # noqa: E731
+    r3 = lambda x: x.reshape(b * h, n, chunk).astype(jnp.float32)  # noqa: E731
+    mat = lambda d: pl.BlockSpec((None, None, chunk, d), lambda i, j: (i, j, 0, 0))  # noqa: E731
+    row = pl.BlockSpec((None, None, chunk), lambda i, j: (i, j, 0))
+    out_shape = [
+        jax.ShapeDtypeStruct((b * h, n, chunk, d), jnp.float32)
+        for d in (dk, dv, dk, dk, chunk, chunk)
+    ]
+    kernel = functools.partial(_prep_kernel, chunk=chunk, precision=prec)
+    outs = pallas_call_compat(
+        kernel,
+        grid=(b * h, n),
+        in_specs=[mat(dk), mat(dk), mat(dv), row, row],
+        out_specs=[mat(d) for d in (dk, dv, dk, dk, chunk, chunk)],
+        out_shape=out_shape,
+        **_call_kwargs(num_warps, num_stages),
+    )(r4(q), r4(k), r4(v), r3(g), r3(beta))
+    return tuple(o.reshape(b, h, n, chunk, o.shape[-1]) for o in outs)

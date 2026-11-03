@@ -223,3 +223,55 @@ def test_ssm_model_with_gated_deltanet_jit_grad():
     assert np.isfinite(float(val))
     leaves = jax.tree.leaves(nnx.state(grads, nnx.Param))
     assert leaves and all(bool(jnp.all(jnp.isfinite(g))) for g in leaves)
+
+
+@pytest.mark.parametrize("chunk", [16, 64])
+def test_repeated_keys_ill_conditioned_wy(chunk):
+    """Identical keys with beta ~ 1 make (I + A) far from identity; the block
+    forward substitution must stay exact (a Neumann series would not)."""
+    q, k, v, _, beta, h0 = _inputs(length=128, dk=16)
+    k = jnp.broadcast_to(k[:, :, :1], k.shape)
+    beta = jnp.full(beta.shape, 0.99)
+    o_ref, s_ref = dr.gated_delta_rule_recurrent(q, k, v, None, beta, h0)
+    o, s = _chunked(chunk)(q, k, v, None, beta, h0)
+    assert _rel(o, o_ref) < 1e-4 and _rel(s, s_ref) < 1e-4
+    g_ref = jax.grad(_loss(dr.gated_delta_rule_recurrent), argnums=(1, 4))(
+        q, k, v, None, beta, h0
+    )
+    g = jax.grad(_loss(_chunked(chunk)), argnums=(1, 4))(q, k, v, None, beta, h0)
+    for a, b in zip(g, g_ref, strict=True):
+        assert _rel(a, b) < 1e-4
+
+
+def test_store_prep_variant_matches():
+    args = _inputs(length=96)
+
+    def stored(*a):
+        return dr._chunked_impl(
+            *a,
+            chunk_size=32,
+            qk_l2norm=False,
+            precision=HIGHEST,
+            use_pallas=False,
+            store_prep=True,
+        )
+
+    g1 = jax.grad(_loss(stored), argnums=range(6))(*args)
+    g2 = jax.grad(_loss(_chunked(32)), argnums=range(6))(*args)
+    for a, b in zip(g1, g2, strict=True):
+        assert _rel(a, b) < 1e-5
+
+
+@pytest.mark.parametrize("chunk,dk,dv", [(16, 16, 32), (32, 64, 64), (64, 128, 128)])
+def test_pallas_prep_matches_xla_gpu(chunk, dk, dv):
+    _requires_gpu()
+    from probjax.nn.pallas_kernels.kernels import delta_rule_pallas as dp
+
+    q, k, v, la, beta, _ = _inputs(length=4 * chunk, dk=dk, dv=dv)
+    g = dr._chunk_gate(la, chunk)
+    ref = dr._chunk_prep_xla(q, k, v, g, beta, chunk, HIGHEST)
+    out = dp.chunk_prep(
+        q, k, v, g.reshape(beta.shape), beta, chunk=chunk, precision=HIGHEST
+    )
+    for a, b in zip(out, ref, strict=True):
+        assert _rel(a, b) < 1e-5

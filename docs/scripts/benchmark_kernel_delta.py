@@ -12,8 +12,8 @@ Implementations (``--impls``):
 * ``recurrent``   -- token-by-token ``lax.scan`` (``gated_delta_rule_recurrent``).
 * ``chunked``     -- chunkwise WY/UT form in pure JAX with the memory-lean
   end-to-end VJP (residuals: inputs + chunk-boundary states).
-* ``chunked_fat`` -- same forward, but autodiff of the chunk-local prep, i.e.
-  every chunk-local intermediate is stored for backward (memory baseline).
+* ``chunked_fat`` -- same forward, but the chunk-local WY quantities are
+  stored for backward instead of recomputed (memory baseline).
 * ``pallas``      -- chunked form with Pallas-Triton inter-chunk kernels (GPU).
 * ``ssd``         -- Mamba-2 SSD (``probjax.nn.pallas_kernels.ssd``) at equal
   shapes, as a cost reference (no delta-rule correction term).
@@ -70,7 +70,7 @@ def impl_fn(name, chunk_size=64):
             qk_l2norm=False,
             precision=None,
             use_pallas=False,
-            lean=False,
+            store_prep=True,
         )[0]
     if name == "pallas":
         return lambda *a: dr.gated_delta_rule_pallas(*a, chunk_size=chunk_size)[0]
