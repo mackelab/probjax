@@ -387,6 +387,9 @@ def _delta_core_fwd(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pal
 
 def _delta_core_bwd(chunk_size, precision, use_pallas, res, cts):
     q, k, v, log_alpha, beta, states = res
+    # The barrier stops XLA from CSE-ing this recompute with the forward prep
+    # (which would keep every chunk-local intermediate alive until here).
+    q, k, v, log_alpha, beta = lax.optimization_barrier((q, k, v, log_alpha, beta))
     prep, prep_vjp = jax.vjp(
         lambda *x: _chunk_prep(*x, chunk_size, precision), q, k, v, log_alpha, beta
     )
