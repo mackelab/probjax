@@ -18,7 +18,7 @@ from probjax.inference import (
     smooth,
 )
 from probjax.inference.mcmc import adjusted_mclmc_dynamic, dynamic_hmc
-from probjax.inference.mcmc._dynamic_stepping import (
+from probjax.inference.mcmc.base import (
     random_trajectory_length_fns,
 )
 from probjax.inference.smc.ess import ess
