@@ -111,12 +111,14 @@ class dirichlet_gen(rv_multivariate, rv_exponential_family):
     @classmethod
     def entropy(cls, alpha: Array, **kwargs):
         """Entropy of the Dirichlet distribution."""
+        # H = ln B(alpha) + (alpha_0 - K) psi(alpha_0)
+        #     - sum_i (alpha_i - 1) psi(alpha_i)
         alpha_sum = jnp.sum(alpha, axis=-1, keepdims=True)
+        log_beta = jnp.sum(gammaln(alpha), axis=-1) - gammaln(alpha_sum)[..., 0]
         return (
-            gammaln(alpha_sum)
-            - gammaln(alpha)
-            + (alpha - 1) * digamma(alpha)
-            - (alpha_sum - alpha.shape[-1]) * digamma(alpha_sum)
+            log_beta
+            + (alpha_sum[..., 0] - alpha.shape[-1]) * digamma(alpha_sum)[..., 0]
+            - jnp.sum((alpha - 1) * digamma(alpha), axis=-1)
         )
 
     @classmethod

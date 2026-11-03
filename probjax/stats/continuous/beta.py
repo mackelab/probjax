@@ -191,13 +191,15 @@ class beta_gen(rv_continuous, rv_exponential_family):
         **kwargs: Any,
     ) -> ArrayLike:
         """Entropy of the beta distribution."""
+        # H = ln B(a, b) - (a - 1) psi(a) - (b - 1) psi(b)
+        #     + (a + b - 2) psi(a + b)
         return (
-            gammaln(alpha + beta)
-            - gammaln(alpha)
-            - gammaln(beta)
-            + (alpha - 1) * digamma(alpha)
-            + (beta - 1) * digamma(beta)
-            - (alpha + beta - 2) * digamma(alpha + beta)
+            gammaln(alpha)
+            + gammaln(beta)
+            - gammaln(alpha + beta)
+            - (alpha - 1) * digamma(alpha)
+            - (beta - 1) * digamma(beta)
+            + (alpha + beta - 2) * digamma(alpha + beta)
         )
 
     @classmethod

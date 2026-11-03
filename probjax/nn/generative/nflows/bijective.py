@@ -73,6 +73,16 @@ def identity_init(rng, shape: tuple, dtype: DTypeLike = jnp.float32):
     return jnp.eye(shape[0], dtype=dtype)
 
 
+def ones_init(rng, shape: tuple, dtype: DTypeLike = jnp.float32):
+    """Initializer that returns ones, the identity of an elementwise scale.
+
+    A per-feature scale is a vector, so :func:`identity_init` (which insists on
+    a square matrix) rejects it; an all-ones vector is the elementwise identity.
+    """
+    del rng  # Unused but kept for compatibility
+    return jnp.ones(shape, dtype=dtype)
+
+
 class Affine(nnx.Module):
     """Affine transformation module."""
 
@@ -82,7 +92,7 @@ class Affine(nnx.Module):
         *,
         dtype: DTypeLike | None = None,
         param_dtype: DTypeLike | None = None,
-        scale_init: Initializer = identity_init,
+        scale_init: Initializer = ones_init,
         bias_init: Initializer = nnx.initializers.zeros,
         rngs: nnx.Rngs,
     ):
@@ -92,7 +102,8 @@ class Affine(nnx.Module):
             in_out_features (int): Input and output dimension. Must be positive.
             dtype: Computation dtype (optional).
             param_dtype: Parameter dtype (optional).
-            scale_init: Initializer for scale parameter. Defaults to identity_init.
+            scale_init: Initializer for scale parameter. Defaults to
+                :func:`ones_init`, the elementwise identity scale.
             bias_init: Initializer for bias parameter. Defaults to zeros.
             rngs: Random number generators.
 
