@@ -8,6 +8,13 @@ from flax import nnx
 from probjax.nn.layers.ssm import LRUCell, binary_operator_diag, linear_recurrence_scan
 
 
+@pytest.fixture(autouse=True)
+def _exact_matmuls():
+    # GPUs default to TF32 matmuls; compare implementations at full precision.
+    with jax.default_matmul_precision("highest"):
+        yield
+
+
 def _sequential(decay, inputs):
     def step(h, u):
         h = decay * h + u

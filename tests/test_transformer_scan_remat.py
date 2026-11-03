@@ -8,6 +8,14 @@ from flax import nnx
 from probjax.nn import DiffusionTransformer, Transformer
 from probjax.nn.pallas_kernels import CausalMask
 
+
+@pytest.fixture(autouse=True)
+def _exact_matmuls():
+    # GPUs default to TF32 matmuls; compare implementations at full precision.
+    with jax.default_matmul_precision("highest"):
+        yield
+
+
 DIMS = dict(model_dim=32, num_heads=2, num_layers=3, attn_size=16)
 
 
