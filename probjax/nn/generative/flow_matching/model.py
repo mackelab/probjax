@@ -41,6 +41,12 @@ class FlowMatcher(GenerativeModel):
       - precond    : FlowPreconditioningProtocol
       - train_cfg  : FlowTrainingConfigProtocol
       - solver_cfg : FlowSolverConfigProtocol | None
+
+    ``ot_coupling="exact"`` (Hungarian, host callback) or ``"sinkhorn"``
+    (entropic plan sampled on device) re-pairs each training minibatch of noise
+    and data by optimal transport before the loss (OT-CFM, Tong et al. 2023),
+    which straightens paths so fewer ODE steps are needed at sampling time.
+    ``ot_coupling_kwargs`` is forwarded to :func:`probjax.nn.ot.ot_pairing`.
     """
 
     schedule: InterpolationScheduleProtocol
@@ -63,7 +69,13 @@ class FlowMatcher(GenerativeModel):
         rngs: nnx.RngStream | None = None,
         *,
         event_spec=None,
+        ot_coupling: str | None = None,
+        ot_coupling_kwargs: Mapping[str, object] | None = None,
     ):
+        if ot_coupling not in (None, "exact", "sinkhorn"):
+            raise ValueError(
+                f"ot_coupling must be None, 'exact' or 'sinkhorn', got {ot_coupling!r}"
+            )
         if event_spec is not None:
             self.set_event_spec(event_spec)
         if not isinstance(schedule, InterpolationScheduleProtocol):
@@ -92,6 +104,10 @@ class FlowMatcher(GenerativeModel):
         self.std1 = nnx.Variable(std1)
 
         self._loss_kwargs: dict[str, Any] = dict(loss_kwargs or {})
+        # Minibatch OT pairing of (noise, data) before the CFM loss (OT-CFM,
+        # Tong et al. 2023). Off by default: no change in behavior.
+        self.ot_coupling = ot_coupling
+        self._ot_coupling_kwargs: dict[str, Any] = dict(ot_coupling_kwargs or {})
 
     _floating_event_dtype_error = "Flow matching event dtypes must be floating point."
 
@@ -191,6 +207,20 @@ class FlowMatcher(GenerativeModel):
             + self.mu0.get_value()
         )
 
+        if self.ot_coupling is not None:
+            # Re-pair noise to data by a minibatch OT plan; data (and any
+            # conditioning aligned with it) keeps its order. With conditioning
+            # the pairing ignores the condition (Tong et al. use it unconditionally).
+            from probjax.nn.ot.coupling import apply_ot_pairing
+
+            x0 = apply_ot_pairing(
+                x0,
+                data,
+                jax.random.fold_in(rng, 0x07C0),
+                method=self.ot_coupling,
+                **self._ot_coupling_kwargs,
+            )
+
         # Get shape from data for time scheduling
         data_shape = data.shape
         ndims = data.ndim - 2
@@ -266,6 +296,8 @@ class LinearFlow(FlowMatcher):
         preconditioning: FlowPreconditioningProtocol | None = None,
         *,
         event_spec=None,
+        ot_coupling: str | None = None,
+        ot_coupling_kwargs: Mapping[str, object] | None = None,
     ):
         schedule = schedule or LinearInterpolationSchedule()
         preconditioning = preconditioning or GaussianFlowPreconditioning()
@@ -284,6 +316,8 @@ class LinearFlow(FlowMatcher):
             std1=std1,
             rngs=rngs,
             loss_kwargs=loss_kwargs,
+            ot_coupling=ot_coupling,
+            ot_coupling_kwargs=ot_coupling_kwargs,
         )
 
     def denoise(self, t: ArrayLike, x: Array) -> Array:
