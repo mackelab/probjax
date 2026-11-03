@@ -1533,6 +1533,24 @@ _SMEM_LIMIT_CACHE: int | None | str = "uninitialized"
 # Above this limit we assume a datacenter GPU and keep requested configs.
 _DATACENTER_SMEM_THRESHOLD = 150 * 1024
 _MIN_TILE = 16
+# Fraction of the reported limit the estimates may use (headroom for Triton
+# bookkeeping such as barriers; the models below are fitted on sm_86).
+_SMEM_HEADROOM = 0.95
+
+# Default tiles on small-SMEM GPUs, keyed by (dtype bytes, padded head dim):
+# (block_q, block_k, bwd_outer, bwd_inner, num_stages). ``bwd_outer`` is the
+# resident tile of the fused backward (``block_kv_dkv`` = ``block_q_dq``),
+# ``bwd_inner`` the streamed one (``block_q_dkv`` = ``block_kv_dq``). Measured
+# on an RTX 3090 with docs/scripts/benchmark_gpu_attention_tiles.py
+# (docs/benchmarks/kernel_attn_gpu_tiles_before.json); only used when the
+# caller kept the default block sizes / num_stages.
+_SMALL_SMEM_TUNED: dict[tuple[int, int], tuple[int, int, int, int, int]] = {
+    (2, 64): (64, 64, 64, 64, 2),
+    (2, 128): (128, 64, 64, 32, 2),
+    (4, 64): (64, 32, 32, 32, 1),
+}
+_DEFAULT_BLOCK_SIZES = (128, 128, 64, 64, 64, 64)
+_DEFAULT_NUM_STAGES = 2
 
 
 def _query_triton_smem_limit() -> int | None:
@@ -1589,13 +1607,29 @@ def _next_pow2(n: int) -> int:
 def _estimate_fwd_smem_bytes(
     bq: int, bk: int, bd: int, stages: int, dtype_bytes: int
 ) -> int:
-    """Conservative (over-estimating) forward shared-memory model.
+    """Shared memory Triton allocates for the forward kernel (upper bound).
 
-    Exact Triton accounting depends on pipelining/unrolling, so we deliberately
-    over-estimate: a config whose estimate fits is very likely to actually fit.
-    Only applied on small-SMEM devices; large GPUs keep requested configs.
+    K and V tiles are multi-buffered (``stages`` copies each) and the
+    ``bq x bk`` probability tile is staged through shared memory for the layout
+    conversion that feeds the second dot; Q stays in registers. Fitted to the
+    RESOURCE_EXHAUSTED reports of the tile sweep on sm_86: it matches the
+    requested bytes for ``stages >= 2`` and never under-estimates.
     """
-    return (bq * bd + 2 * stages * bk * bd + bq * bk) * dtype_bytes
+    return (2 * max(stages, 1) * bk * bd + bq * bk) * dtype_bytes
+
+
+def _estimate_bwd_smem_bytes(
+    bq_dkv: int, bkv_dkv: int, bq_dq: int, bkv_dq: int, bd: int, dtype_bytes: int
+) -> int:
+    """Shared memory of the fused backward kernel (upper bound, see above).
+
+    Resident (``outer``) and streamed (``inner``) tiles of two operands each,
+    plus one score tile; pipelining adds only ~1 KB here.
+    """
+    outer = max(bkv_dkv, bq_dq)
+    inner = max(bq_dkv, bkv_dq)
+    scores = max(bq_dkv * bkv_dkv, bq_dq * bkv_dq)
+    return (2 * (outer + inner) * bd + scores) * dtype_bytes
 
 
 def _shrink_fwd_config(bq: int, bk: int, stages: int) -> tuple[int, int, int] | None:
@@ -1624,7 +1658,7 @@ def _adjust_fwd_config_for_smem(
     # Clamp to sequence-independent safe starting point; loop guards jit path.
     while True:
         est = _estimate_fwd_smem_bytes(bq, bk, bd, stages, dtype_bytes)
-        if est <= int(limit * 0.9):
+        if est <= int(limit * _SMEM_HEADROOM):
             return (bq, bk, stages)
         nxt = _shrink_fwd_config(bq, bk, stages)
         if nxt is None:
@@ -1656,51 +1690,61 @@ def _adjust_block_sizes_for_smem(
     head_dim: int,
     dtype_bytes: int,
 ) -> tuple[BlockSizes, int]:
-    """Proactively shrink tiles so the kernel fits small-SMEM devices."""
+    """Pick tiles that fit (and are fast on) small-SMEM devices.
+
+    Default block sizes / stages are replaced by the measured per-(dtype,
+    head_dim) configuration in ``_SMALL_SMEM_TUNED``; any configuration is then
+    shrunk until the shared-memory estimates fit. Never grows a requested tile.
+    """
     limit = _query_triton_smem_limit()
     if limit is None or limit >= _DATACENTER_SMEM_THRESHOLD:
         return (block_sizes, num_stages)
+    budget = int(limit * _SMEM_HEADROOM)
     bd = _next_pow2(head_dim)
-    bq = min(block_sizes.block_q, q_seq_len)
-    bk = min(block_sizes.block_k, kv_seq_len)
-    bq, bk, stages = _adjust_fwd_config_for_smem(
-        bq, bk, bd, num_stages, dtype_bytes, limit
+    req = (
+        block_sizes.block_q,
+        block_sizes.block_k,
+        block_sizes.block_q_dkv,
+        block_sizes.block_kv_dkv,
+        block_sizes.block_q_dq,
+        block_sizes.block_kv_dq,
     )
-    # Scale backward tiles with the same shrink pressure: halve them until the
-    # forward-style estimate for each backward pair fits.
-    bq_dkv = min(block_sizes.block_q_dkv, q_seq_len)
-    bkv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
-    bq_dq = min(block_sizes.block_q_dq, q_seq_len)
-    bkv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+    fwd_tiles = req[:2]
+    bwd_tiles = req[2:]
+    stages = num_stages
+    tuned = _SMALL_SMEM_TUNED.get((dtype_bytes, bd))
+    if tuned is not None and num_stages == _DEFAULT_NUM_STAGES:
+        t_bq, t_bk, t_outer, t_inner, stages = tuned
+        if fwd_tiles == _DEFAULT_BLOCK_SIZES[:2]:
+            fwd_tiles = (t_bq, t_bk)
+        if bwd_tiles == _DEFAULT_BLOCK_SIZES[2:]:
+            bwd_tiles = (t_inner, t_outer, t_outer, t_inner)
+    bq = min(fwd_tiles[0], q_seq_len)
+    bk = min(fwd_tiles[1], kv_seq_len)
+    bq, bk, stages = _adjust_fwd_config_for_smem(bq, bk, bd, stages, dtype_bytes, limit)
     cur: tuple[int, int, int, int, int] | None = (
-        bq_dkv,
-        bkv_dkv,
-        bq_dq,
-        bkv_dq,
+        min(bwd_tiles[0], q_seq_len),
+        min(bwd_tiles[1], kv_seq_len),
+        min(bwd_tiles[2], q_seq_len),
+        min(bwd_tiles[3], kv_seq_len),
         stages,
     )
     while cur is not None:
         c_bq_dkv, c_bkv_dkv, c_bq_dq, c_bkv_dq, c_st = cur
-        est_dkv = _estimate_fwd_smem_bytes(c_bq_dkv, c_bkv_dkv, bd, c_st, dtype_bytes)
-        est_dq = _estimate_fwd_smem_bytes(c_bq_dq, c_bkv_dq, bd, c_st, dtype_bytes)
-        if max(est_dkv, est_dq) <= int(limit * 0.9):
+        est = _estimate_bwd_smem_bytes(
+            c_bq_dkv, c_bkv_dkv, c_bq_dq, c_bkv_dq, bd, dtype_bytes
+        )
+        if est <= budget:
             break
         cur = _shrink_all_backward_blocks(c_bq_dkv, c_bkv_dkv, c_bq_dq, c_bkv_dq, c_st)
+    bq_dkv, bkv_dkv, bq_dq, bkv_dq = bwd_tiles
     if cur is not None:
         bq_dkv, bkv_dkv, bq_dq, bkv_dq, stages = cur
-    # Rebuild full-size BlockSizes (min() with seq len happens at kernel entry).
-    # Preserve user intent when no shrink was needed by keeping original values
-    # if they are already <= the adjusted ones is unnecessary: just set the
-    # adjusted values, but never grow beyond the request.
+    # Rebuild full-size BlockSizes (min() with seq len happens at kernel entry),
+    # never growing beyond the request.
+    new = (bq, bk, bq_dkv, bkv_dkv, bq_dq, bkv_dq)
     return (
-        BlockSizes(
-            block_q=min(block_sizes.block_q, max(bq, _MIN_TILE)),
-            block_k=min(block_sizes.block_k, max(bk, _MIN_TILE)),
-            block_q_dkv=min(block_sizes.block_q_dkv, max(bq_dkv, _MIN_TILE)),
-            block_kv_dkv=min(block_sizes.block_kv_dkv, max(bkv_dkv, _MIN_TILE)),
-            block_q_dq=min(block_sizes.block_q_dq, max(bq_dq, _MIN_TILE)),
-            block_kv_dq=min(block_sizes.block_kv_dq, max(bkv_dq, _MIN_TILE)),
-        ),
+        BlockSizes(*(min(r, max(n, _MIN_TILE)) for r, n in zip(req, new, strict=True))),
         stages,
     )
 

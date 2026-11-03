@@ -23,6 +23,8 @@ Every case checks the output against an fp32 XLA reference.
 from __future__ import annotations
 
 import argparse
+import functools
+import json
 import math
 from pathlib import Path
 
@@ -68,16 +70,28 @@ def _loss_and_grad(attn):
     return jax.jit(jax.grad(loss, argnums=(0, 1, 2)))
 
 
+# Batch elements and heads are independent: numerics are checked on the first
+# batch element and two heads so the fp32 reference stays small at long T.
+_REF = (slice(0, 1), slice(None), slice(0, 2))
+
+
 def _reference(q, k, v, g, causal, scale):
     # Batch elements are independent, so element 0 is an exact reference slice
     # and keeps the fp32 score matrix small at long sequence lengths.
-    f32 = [x[:1].astype(jnp.float32) for x in (q, k, v)]
-    g = g[:1]
+    f32 = [x[_REF].astype(jnp.float32) for x in (q, k, v)]
+    g = g[_REF]
     with jax.default_matmul_precision("highest"):
         attn = _jax_attention("jax_xla", causal, scale)
         out = jax.jit(attn)(*f32)
         grads = _loss_and_grad(attn)(*f32, g)
     return np.asarray(out), [np.asarray(x) for x in grads]
+
+
+def rel_err(a, b) -> float:
+    """Max-abs error relative to the reference's max magnitude."""
+    a = np.asarray(a, dtype=np.float32)
+    b = np.asarray(b, dtype=np.float32)
+    return float(np.max(np.abs(a - b)) / max(np.max(np.abs(b)), 1e-30))
 
 
 def _torch_case(impl, q, k, v, g, causal, scale, mode, ref_out, ref_grads):
@@ -90,42 +104,51 @@ def _torch_case(impl, q, k, v, g, causal, scale, mode, ref_out, ref_grads):
         "torch_efficient": SDPBackend.EFFICIENT_ATTENTION,
         "torch_math": SDPBackend.MATH,
     }[impl]
-    tdtype = {"bfloat16": torch.bfloat16, "float16": torch.float16, "float32": torch.float32}[
-        str(q.dtype)
-    ]
+    tdtype = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }[str(q.dtype)]
 
     def to_torch(x):
         # [B, T, H, D] -> [B, H, T, D]
-        return torch.from_numpy(np.asarray(x, np.float32)).to("cuda", tdtype).transpose(1, 2).contiguous()
+        return (
+            torch
+            .from_numpy(np.asarray(x, np.float32))
+            .to("cuda", tdtype)
+            .transpose(1, 2)
+            .contiguous()
+        )
 
     tq, tk, tv = (to_torch(x).requires_grad_(mode == "fwd_bwd") for x in (q, k, v))
     tg = to_torch(g).to(torch.float32)
 
     def fwd():
         with sdpa_kernel(backend):
-            return F.scaled_dot_product_attention(tq, tk, tv, is_causal=causal, scale=scale)
+            return F.scaled_dot_product_attention(
+                tq, tk, tv, is_causal=causal, scale=scale
+            )
 
     def fwd_bwd():
         with sdpa_kernel(backend):
-            out = F.scaled_dot_product_attention(tq, tk, tv, is_causal=causal, scale=scale)
+            out = F.scaled_dot_product_attention(
+                tq, tk, tv, is_causal=causal, scale=scale
+            )
         return torch.autograd.grad((out.float() * tg).sum(), (tq, tk, tv))
 
     fn = fwd if mode == "fwd" else fwd_bwd
     with torch.no_grad() if mode == "fwd" else torch.enable_grad():
         res = fn()
-        if mode == "fwd":
-            err = max_abs_err(res[:1].float().transpose(1, 2).cpu().numpy(), ref_out)
-        else:
-            err = max(
-                max_abs_err(r[:1].float().transpose(1, 2).cpu().numpy(), ref)
-                for r, ref in zip(res, ref_grads, strict=True)
-            )
+        outs = [res] if mode == "fwd" else list(res)
+        refs = [ref_out] if mode == "fwd" else ref_grads
+        outs = [r[:1, :2].float().transpose(1, 2).cpu().numpy() for r in outs]
+        err = max(max_abs_err(r, ref) for r, ref in zip(outs, refs, strict=True))
+        rerr = max(rel_err(r, ref) for r, ref in zip(outs, refs, strict=True))
         torch.cuda.reset_peak_memory_stats()
         timing = time_torch(fn)
         peak = torch.cuda.max_memory_allocated() / 2**20
-    del tq, tk, tv, tg
     torch.cuda.empty_cache()
-    return dict(max_abs_err=err, peak_mb=peak, **timing)
+    return dict(max_abs_err=err, rel_err=rerr, peak_mb=peak, **timing)
 
 
 def _jax_case(impl, q, k, v, g, causal, scale, mode, ref_out, ref_grads):
@@ -137,18 +160,20 @@ def _jax_case(impl, q, k, v, g, causal, scale, mode, ref_out, ref_grads):
         fn = _loss_and_grad(attn)
         args = (q, k, v, g)
     timing = time_jax(fn, *args)  # first: so compile_s includes compilation
-    if mode == "fwd":
-        err = max_abs_err(fn(*args)[:1], ref_out)
-    else:
-        res = fn(*args)
-        err = max(max_abs_err(r[:1], ref) for r, ref in zip(res, ref_grads, strict=True))
+    outs = [fn(*args)] if mode == "fwd" else list(fn(*args))
+    refs = [ref_out] if mode == "fwd" else ref_grads
+    err = max(max_abs_err(r[_REF], ref) for r, ref in zip(outs, refs, strict=True))
+    rerr = max(rel_err(r[_REF], ref) for r, ref in zip(outs, refs, strict=True))
+    del outs
     stats = {}
     try:
         mem = fn.lower(*args).compile().memory_analysis()
         stats["xla_temp_mb"] = mem.temp_size_in_bytes / 2**20
+        stats["xla_arg_mb"] = mem.argument_size_in_bytes / 2**20
+        stats["xla_out_mb"] = mem.output_size_in_bytes / 2**20
     except Exception:
         pass
-    return dict(max_abs_err=err, **stats, **timing)
+    return dict(max_abs_err=err, rel_err=rerr, **stats, **timing)
 
 
 def attention_flops(batch, heads, q_len, kv_len, dim, causal, mode):
@@ -156,7 +181,9 @@ def attention_flops(batch, heads, q_len, kv_len, dim, causal, mode):
     if causal:
         flops /= 2
     if mode == "fwd_bwd":
-        flops *= 3.5  # fwd + bwd (2.5x fwd, incl. recompute) -- FlashAttention convention
+        flops *= (
+            3.5  # fwd + bwd (2.5x fwd, incl. recompute) -- FlashAttention convention
+        )
     return flops
 
 
@@ -169,11 +196,15 @@ def main():
     parser.add_argument(
         "--seq-lens", type=int, nargs="+", default=[128, 512, 1024, 2048, 4096, 8192]
     )
-    parser.add_argument("--ragged-seq-lens", type=int, nargs="+", default=[600, 1500, 3000])
+    parser.add_argument(
+        "--ragged-seq-lens", type=int, nargs="*", default=[600, 1500, 3000]
+    )
     parser.add_argument("--dtypes", nargs="+", default=["bfloat16", "float32"])
     parser.add_argument("--modes", nargs="+", default=["fwd", "fwd_bwd"])
     parser.add_argument("--causal", nargs="+", type=int, default=[0, 1])
     parser.add_argument("--impls", nargs="+", default=list(JAX_IMPLS + TORCH_IMPLS))
+    parser.add_argument("--append", action="store_true", help="append to --output")
+    parser.add_argument("--tag", default=None, help="label stored in every row")
     args = parser.parse_args()
 
     try:
@@ -184,6 +215,8 @@ def main():
         have_torch = False
 
     rows = []
+    if args.append and args.output.exists():
+        rows = json.loads(args.output.read_text())["results"]
     seq_lens = sorted(set(args.seq_lens) | set(args.ragged_seq_lens))
     for dtype_name in args.dtypes:
         dtype = jnp.dtype(dtype_name)
@@ -206,29 +239,61 @@ def main():
                                 continue  # FlashAttention-2 needs fp16/bf16
                             if impl == "torch_math" and seq > 4096:
                                 continue  # materializes the score matrix
-                            case = _torch_case if impl.startswith("torch") else _jax_case
+                            case = (
+                                _torch_case if impl.startswith("torch") else _jax_case
+                            )
                             res = run_safely(
-                                lambda case=case, impl=impl, mode=mode: case(
-                                    impl, q, k, v, g, causal, scale, mode,
-                                    ref_out, ref_grads,
+                                functools.partial(
+                                    case,
+                                    impl,
+                                    q,
+                                    k,
+                                    v,
+                                    g,
+                                    causal,
+                                    scale,
+                                    mode,
+                                    ref_out,
+                                    ref_grads,
                                 )
                             )
                             row = dict(
-                                impl=impl, dtype=dtype_name, head_dim=dim, seq=seq,
-                                causal=causal, mode=mode, batch=args.batch,
-                                heads=args.heads, **res,
+                                impl=impl,
+                                dtype=dtype_name,
+                                head_dim=dim,
+                                seq=seq,
+                                causal=causal,
+                                mode=mode,
+                                batch=args.batch,
+                                heads=args.heads,
+                                tag=args.tag,
+                                **res,
                             )
                             if "median_ms" in res:
                                 row["tflops"] = (
-                                    attention_flops(args.batch, args.heads, seq, seq, dim, causal, mode)
-                                    / (res["median_ms"] * 1e-3) / 1e12
+                                    attention_flops(
+                                        args.batch,
+                                        args.heads,
+                                        seq,
+                                        seq,
+                                        dim,
+                                        causal,
+                                        mode,
+                                    )
+                                    / (res["median_ms"] * 1e-3)
+                                    / 1e12
                                 )
                             rows.append(row)
                             print(
-                                {k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items()},
+                                {
+                                    k: (round(v, 4) if isinstance(v, float) else v)
+                                    for k, v in row.items()
+                                },
                                 flush=True,
                             )
-                    write_results(args.output, vars(args) | {"output": str(args.output)}, rows)
+                    write_results(
+                        args.output, vars(args) | {"output": str(args.output)}, rows
+                    )
     write_results(args.output, vars(args) | {"output": str(args.output)}, rows)
 
 
