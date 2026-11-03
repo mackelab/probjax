@@ -769,6 +769,9 @@ def _klse_bwd(cfg, res, cts):
 _klse.defvjp(_klse_fwd, _klse_bwd)
 
 
+# Automatic dispatch on GPU uses the dense path up to this many (query, key) pairs.
+_GPU_DENSE_MAX_PAIRS = 2**21
+
 _DEFAULT_BLOCKS = {
     "pallas": (64, 64),
     "xla": (2048, 2048),
@@ -821,6 +824,7 @@ def kernel_logsumexp(
             dispatch therefore routes callables with ``D < 16`` to ``"xla"``.
         epsilon: Temperature (scalar, may be traced and differentiated).
         impl: ``"pallas"`` (GPU default), ``"xla"`` (CPU default) or ``"dense"``.
+            Automatic dispatch on GPU uses ``"dense"`` for ``N * M <= 2**21``.
         block_q, block_k: Tile sizes (powers of two for ``"pallas"``).
         precision: Matmul precision for the cost cross term; defaults to exact
             fp32 products for fp32 inputs.
@@ -858,6 +862,11 @@ def kernel_logsumexp(
         raise ValueError(f"Unknown cost {cost!r}")
     if impl is None:
         impl = "xla" if jax.default_backend() == "cpu" and not interpret else "pallas"
+        if impl == "pallas" and x.shape[0] * m <= _GPU_DENSE_MAX_PAIRS:
+            # Tiny problems: launch overhead dominates the 3 Pallas kernels; the
+            # dense path is ~3x faster for fwd+bwd at N=M=1k (RTX 3090) and its
+            # N*M buffer is only a few MB here.
+            impl = "dense"
         if impl == "pallas" and callable(cost) and x.shape[1] < 16:
             # Triton dots need a contraction dim >= 16 and silently misbehave
             # below it; zero-padding features is only safe for sqeuclidean.
