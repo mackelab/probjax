@@ -12,6 +12,7 @@ from probjax.nn.layers.conv import (
     ResnetBlock,
     SpatialSelfAttention,
 )
+from probjax.nn.layers.delta_net import GatedDeltaNetCell
 from probjax.nn.layers.encoding import (
     GaussianFourierEmbedding,
     LearnablePosEncode,

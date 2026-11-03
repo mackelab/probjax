@@ -22,6 +22,12 @@ from .linear_attention import (
     right_shift_and_zero_pad,
 )
 from .mamba import compute_mamba_scan
+from .delta_rule import (
+    gated_delta_rule,
+    gated_delta_rule_chunked,
+    gated_delta_rule_pallas,
+    gated_delta_rule_recurrent,
+)
 from .ssd import (
     ssd,
     ssd_linear_scan,
@@ -36,6 +42,10 @@ __all__ = [
     "attention",
     "attention_with_pipeline_emitter",
     "compute_mamba_scan",
+    "gated_delta_rule",
+    "gated_delta_rule_chunked",
+    "gated_delta_rule_pallas",
+    "gated_delta_rule_recurrent",
     "kde_density",
     "kernel_mv",
     "kernel_mv_naive",

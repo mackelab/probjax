@@ -1,0 +1,569 @@
+"""Gated delta rule (Gated DeltaNet / DeltaNet) sequence mixer.
+
+Per head, with state ``S_t`` of shape ``[Dk, Dv]`` (same orientation as
+:func:`probjax.nn.pallas_kernels.ssd`):
+
+.. math::
+
+    S_t = \\alpha_t (I - \\beta_t k_t k_t^\\top) S_{t-1} + \\beta_t k_t v_t^\\top,
+    \\qquad o_t = S_t^\\top q_t,
+
+with ``alpha_t = exp(log_alpha_t)`` in ``(0, 1]`` and ``beta_t`` in ``(0, 1)``.
+``log_alpha == 0`` gives plain DeltaNet (Schlag et al. 2021; Yang et al. 2024,
+"Parallelizing Linear Transformers with the Delta Rule over Sequence Length"),
+a learned ``log_alpha < 0`` gives Gated DeltaNet (Yang et al. 2024, "Gated Delta
+Networks: Improving Mamba2 with Delta Rule").
+
+Implementations
+---------------
+* :func:`gated_delta_rule_recurrent` -- token-by-token ``lax.scan`` reference
+  (fp32 state, ``O(L)`` sequential steps).
+* :func:`gated_delta_rule_chunked` -- chunkwise-parallel form. Inside a chunk of
+  ``C`` tokens the product of the ``C`` generalized Householder transitions is
+  written in WY / UT form: with ``u_t = beta_t (v_t - alpha_t S_{t-1}^T k_t)`` the
+  recurrence becomes ``S_t = alpha_t S_{t-1} + k_t u_t^T`` and the ``u`` of a
+  chunk solve a unit lower-triangular system
+  ``(I + A) U = beta V - diag(beta gamma) K S_0`` where
+  ``A_ij = beta_i (k_i . k_j) gamma_i / gamma_j`` (``j < i``) and ``gamma`` is the
+  within-chunk cumulative gate. Solving once per chunk (UT transform) gives
+  ``U = W_v - W_k S_0`` with chunk-local ``W_v, W_k``; only the ``L / C``
+  chunk-boundary states are then propagated sequentially. Every decay factor is
+  ``exp`` of a non-positive number, so no division by the cumulative gate occurs.
+  The inter-chunk pass is a ``custom_vjp`` primitive that keeps only the chunk
+  boundary states (``L / C * Dk * Dv`` per head) as residuals and propagates the
+  state cotangent backwards in one reverse scan; nothing of size
+  ``L * Dk * Dv`` is ever materialized. This is the CPU path.
+* :func:`gated_delta_rule_pallas` -- the same algorithm with the sequential
+  inter-chunk pass (forward and backward) as Pallas-Triton kernels on GPU.
+* :func:`gated_delta_rule` -- public entry point dispatching by backend.
+
+Layout follows ``ssd``: ``q, k: [B, H, L, Dk]``, ``v: [B, H, L, Dv]``,
+``log_alpha, beta: [B, H, L]``, ``h0: [B, H, Dk, Dv]``. All functions return
+``(o, final_state)`` with ``o`` in the input dtype and ``final_state`` in fp32.
+"""
+
+from __future__ import annotations
+
+import functools
+from typing import Literal
+
+import jax
+import jax.numpy as jnp
+from jax import lax
+
+__all__ = [
+    "gated_delta_rule",
+    "gated_delta_rule_chunked",
+    "gated_delta_rule_pallas",
+    "gated_delta_rule_recurrent",
+    "l2_normalize",
+]
+
+Implementation = Literal["auto", "recurrent", "chunked", "pallas"]
+
+
+def l2_normalize(x: jax.Array, eps: float = 1e-6) -> jax.Array:
+    """L2-normalizes the last axis (computed in fp32, returned in ``x.dtype``)."""
+    xf = x.astype(jnp.float32)
+    inv = lax.rsqrt(jnp.sum(xf * xf, axis=-1, keepdims=True) + eps)
+    return (xf * inv).astype(x.dtype)
+
+
+def _validate(q, k, v, log_alpha, beta, h0):
+    if q.ndim != 4 or k.ndim != 4 or v.ndim != 4:
+        raise ValueError(
+            f"q, k, v must be rank-4 [B, H, L, D]; got {q.shape}, {k.shape}, {v.shape}."
+        )
+    if q.shape != k.shape:
+        raise ValueError(f"q and k must have equal shapes, got {q.shape}, {k.shape}.")
+    b, h, seq, _ = q.shape
+    if v.shape[:3] != (b, h, seq):
+        raise ValueError(
+            f"v must be [B, H, L, Dv] = {(b, h, seq)} + (Dv,), got {v.shape}."
+        )
+    for name, x in (("log_alpha", log_alpha), ("beta", beta)):
+        if x is not None and x.shape != (b, h, seq):
+            raise ValueError(f"{name} must have shape {(b, h, seq)}, got {x.shape}.")
+    if h0 is not None and h0.shape != (b, h, q.shape[-1], v.shape[-1]):
+        raise ValueError(
+            f"h0 must have shape {(b, h, q.shape[-1], v.shape[-1])}, got {h0.shape}."
+        )
+
+
+def _prepare(q, k, v, log_alpha, beta, h0, qk_l2norm):
+    _validate(q, k, v, log_alpha, beta, h0)
+    if qk_l2norm:
+        q = l2_normalize(q)
+        k = l2_normalize(k)
+    b, h, seq, dk = q.shape
+    dv = v.shape[-1]
+    if log_alpha is None:
+        log_alpha = jnp.zeros((b, h, seq), jnp.float32)
+    if h0 is None:
+        h0 = jnp.zeros((b, h, dk, dv), jnp.float32)
+    return q, k, v, log_alpha, beta, h0
+
+
+# --------------------------------------------------------------------------
+# Recurrent reference
+# --------------------------------------------------------------------------
+
+
+def gated_delta_rule_recurrent(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array | None,
+    beta: jax.Array,
+    h0: jax.Array | None = None,
+    *,
+    qk_l2norm: bool = False,
+    precision=lax.Precision.HIGHEST,
+) -> tuple[jax.Array, jax.Array]:
+    """Token-by-token ``lax.scan`` reference (fp32 state and arithmetic).
+
+    Args:
+        q, k: ``[B, H, L, Dk]``.
+        v: ``[B, H, L, Dv]``.
+        log_alpha: ``[B, H, L]`` log of the gate (``<= 0``); ``None`` means
+            ``alpha == 1`` (plain DeltaNet).
+        beta: ``[B, H, L]`` write strength in ``(0, 1)``.
+        h0: optional initial state ``[B, H, Dk, Dv]``.
+        qk_l2norm: L2-normalize ``q`` and ``k`` along the feature axis first.
+
+    Returns:
+        ``(o, final_state)`` with ``o: [B, H, L, Dv]`` (input dtype) and
+        ``final_state: [B, H, Dk, Dv]`` (fp32).
+    """
+    dtype = q.dtype
+    q, k, v, log_alpha, beta, h0 = _prepare(q, k, v, log_alpha, beta, h0, qk_l2norm)
+    f32 = lambda x: x.astype(jnp.float32)  # noqa: E731
+    q, k, v, log_alpha, beta, h0 = map(f32, (q, k, v, log_alpha, beta, h0))
+
+    def step(s, xs):
+        q_t, k_t, v_t, la_t, b_t = xs
+        s = jnp.exp(la_t)[:, :, None, None] * s
+        pred = jnp.einsum("bhkv,bhk->bhv", s, k_t, precision=precision)
+        s = s + jnp.einsum(
+            "bhk,bhv->bhkv", k_t, b_t[..., None] * (v_t - pred), precision=precision
+        )
+        o_t = jnp.einsum("bhkv,bhk->bhv", s, q_t, precision=precision)
+        return s, o_t
+
+    xs = (
+        jnp.moveaxis(q, 2, 0),
+        jnp.moveaxis(k, 2, 0),
+        jnp.moveaxis(v, 2, 0),
+        jnp.moveaxis(log_alpha, 2, 0),
+        jnp.moveaxis(beta, 2, 0),
+    )
+    s, o = lax.scan(step, h0, xs)
+    return jnp.moveaxis(o, 0, 2).astype(dtype), s
+
+
+# --------------------------------------------------------------------------
+# Chunked (WY / UT transform) form
+# --------------------------------------------------------------------------
+
+
+def _ein(spec, *ops, precision=None):
+    return jnp.einsum(
+        spec, *ops, precision=precision, preferred_element_type=jnp.float32
+    )
+
+
+def _diag_blocks(x: jax.Array, s: int) -> jax.Array:
+    """``[..., C, C] -> [..., C // s, s, s]`` diagonal blocks."""
+    *lead, c, _ = x.shape
+    n = c // s
+    xr = x.reshape(*lead, n, s, n, s)
+    return jnp.moveaxis(jnp.diagonal(xr, axis1=-4, axis2=-2), -1, -3)
+
+
+def _unit_lower_inverse(a: jax.Array, precision=None, base: int = 16) -> jax.Array:
+    """``(I + a)^{-1}`` for strictly lower-triangular ``a: [..., C, C]``.
+
+    Block forward substitution: ``base x base`` diagonal blocks are inverted by
+    (vectorized, unrolled) row substitution, then merged pairwise with
+    ``[[X, 0], [B, Y]]^{-1} = [[X^-1, 0], [-Y^-1 B X^-1, Y^-1]]``. Only small
+    batched matmuls -- XLA:CPU's batched ``triangular_solve`` is ~1000x slower.
+    ``C`` must be ``base * 2^j`` or at most ``base``.
+    """
+    c = a.shape[-1]
+    s = min(base, c)
+    ad = _diag_blocks(a, s)
+    eye = jnp.eye(s, dtype=a.dtype)
+    rows = [jnp.broadcast_to(eye[0], ad.shape[:-1])]
+    for i in range(1, s):
+        prev = jnp.stack(rows, axis=-2)  # [..., i, s]
+        rows.append(
+            eye[i] - _ein("...j,...jk->...k", ad[..., i, :i], prev, precision=precision)
+        )
+    inv = jnp.stack(rows, axis=-2)  # [..., C // s, s, s]
+    while s < c:
+        lower_left = _diag_blocks(a, 2 * s)[..., s:, :s]
+        top, bot = inv[..., 0::2, :, :], inv[..., 1::2, :, :]
+        off = -_ein(
+            "...ij,...jk->...ik",
+            _ein("...ij,...jk->...ik", bot, lower_left, precision=precision),
+            top,
+            precision=precision,
+        )
+        zeros = jnp.zeros_like(top)
+        inv = jnp.concatenate(
+            [jnp.concatenate([top, zeros], -1), jnp.concatenate([off, bot], -1)], -2
+        )
+        s *= 2
+    return inv[..., 0, :, :]
+
+
+def _solve_unit_lower(a, rhs, precision):
+    """Solves ``(I + a) x = rhs`` for strictly lower-triangular ``a``."""
+    c = a.shape[-1]
+    if jax.default_backend() == "gpu" or (c > 16 and c & (c - 1)):
+        # cuBLAS batched trsm is fast; also the fallback for odd chunk sizes.
+        eye = jnp.eye(c, dtype=a.dtype)
+        return lax.linalg.triangular_solve(
+            a + eye, rhs, left_side=True, lower=True, unit_diagonal=True
+        )
+    inv = _unit_lower_inverse(a, precision)
+    return _ein("...ij,...jd->...id", inv, rhs, precision=precision)
+
+
+def _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision):
+    """Chunk-local (parallel) quantities of the WY representation.
+
+    Inputs are ``[B, H, L, D]`` with ``L % chunk_size == 0``. Returns fp32
+    ``Wk, Wv, Kd, Qg: [B, H, N, C, D]``, ``P: [B, H, N, C, C]`` and
+    ``a: [B, H, N]``.
+    """
+    b, h, seq, dk = q.shape
+    dv = v.shape[-1]
+    c = chunk_size
+    n = seq // c
+    f32 = lambda x: x.astype(jnp.float32)  # noqa: E731
+    qc = f32(q).reshape(b, h, n, c, dk)
+    kc = f32(k).reshape(b, h, n, c, dk)
+    vc = f32(v).reshape(b, h, n, c, dv)
+    bc = f32(beta).reshape(b, h, n, c)
+    g = jnp.cumsum(f32(log_alpha).reshape(b, h, n, c), axis=-1)  # <= 0, decreasing
+    g_last = g[..., -1]
+
+    idx = jnp.arange(c)
+    strict = idx[:, None] > idx[None, :]
+    causal = idx[:, None] >= idx[None, :]
+    diff = g[..., :, None] - g[..., None, :]  # g_i - g_j (<= 0 for j <= i)
+    decay_causal = jnp.exp(jnp.where(causal, diff, -jnp.inf))
+
+    kk = _ein("bhncd,bhnsd->bhncs", kc, kc, precision=precision)
+    a_mat = jnp.where(strict, bc[..., :, None] * kk * decay_causal, 0.0)
+    rhs = jnp.concatenate(
+        [kc * (bc * jnp.exp(g))[..., None], vc * bc[..., None]], axis=-1
+    )
+    w = _solve_unit_lower(a_mat, rhs, precision)
+    wk, wv = w[..., :dk], w[..., dk:]
+    kd = kc * jnp.exp(g_last[..., None] - g)[..., None]
+    qg = qc * jnp.exp(g)[..., None]
+    qk = _ein("bhncd,bhnsd->bhncs", qc, kc, precision=precision)
+    p = qk * decay_causal
+    return wk, wv, kd, qg, p, jnp.exp(g_last)
+
+
+# ---- inter-chunk state pass: pure-JAX implementation ----------------------
+
+
+def _state_pass_fwd_scan(wk, wv, kd, qg, p, a, s0, precision):
+    """Sequential state pass. Returns (o, states_before_each_chunk, final)."""
+
+    def step(s, xs):
+        wk_n, wv_n, kd_n, qg_n, p_n, a_n = xs
+        u = wv_n - _ein("bhck,bhkv->bhcv", wk_n, s, precision=precision)
+        o = _ein("bhck,bhkv->bhcv", qg_n, s, precision=precision) + _ein(
+            "bhcs,bhsv->bhcv", p_n, u, precision=precision
+        )
+        s_new = a_n[..., None, None] * s + _ein(
+            "bhck,bhcv->bhkv", kd_n, u, precision=precision
+        )
+        return s_new, (o, s)
+
+    xs = tuple(jnp.moveaxis(x, 2, 0) for x in (wk, wv, kd, qg, p, a))
+    s_fin, (o, states) = lax.scan(step, s0, xs)
+    return jnp.moveaxis(o, 0, 2), jnp.moveaxis(states, 0, 2), s_fin
+
+
+def _state_pass_bwd_scan(wk, kd, qg, p, a, do, ds_fin, precision):
+    """Reverse sequential pass. Returns ``(du, ds_after, ds0)`` where
+    ``ds_after[n]`` is the cotangent of the state leaving chunk ``n``."""
+
+    def step(ds, xs):
+        wk_n, kd_n, qg_n, p_n, a_n, do_n = xs
+        du = _ein("bhcs,bhcv->bhsv", p_n, do_n, precision=precision) + _ein(
+            "bhck,bhkv->bhcv", kd_n, ds, precision=precision
+        )
+        ds_prev = (
+            a_n[..., None, None] * ds
+            + _ein("bhck,bhcv->bhkv", qg_n, do_n, precision=precision)
+            - _ein("bhck,bhcv->bhkv", wk_n, du, precision=precision)
+        )
+        return ds_prev, (du, ds)
+
+    xs = tuple(jnp.moveaxis(x, 2, 0) for x in (wk, kd, qg, p, a, do))
+    ds0, (du, ds_after) = lax.scan(step, ds_fin, xs, reverse=True)
+    return jnp.moveaxis(du, 0, 2), jnp.moveaxis(ds_after, 0, 2), ds0
+
+
+def _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision):
+    """Parallel (all chunks at once) parameter cotangents of the state pass."""
+    # U is cheap to recompute from the stored chunk-boundary states.
+    u = wv - _ein("bhnck,bhnkv->bhncv", wk, states, precision=precision)
+    dwk = -_ein("bhncv,bhnkv->bhnck", du, states, precision=precision)
+    dkd = _ein("bhncv,bhnkv->bhnck", u, ds_after, precision=precision)
+    dqg = _ein("bhncv,bhnkv->bhnck", do, states, precision=precision)
+    dp = _ein("bhncv,bhnsv->bhncs", do, u, precision=precision)
+    da = jnp.sum(states * ds_after, axis=(-2, -1))
+    return dwk, du, dkd, dqg, dp, da
+
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(7, 8))
+def _state_pass(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
+    o, _, s_fin = _state_pass_fwd_impl(wk, wv, kd, qg, p, a, s0, precision, use_pallas)
+    return o, s_fin
+
+
+def _state_pass_fwd_impl(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
+    if use_pallas:
+        from . import delta_rule_pallas as _dp
+
+        return _dp.state_pass_fwd(wk, wv, kd, qg, p, a, s0, precision=precision)
+    return _state_pass_fwd_scan(wk, wv, kd, qg, p, a, s0, precision)
+
+
+def _state_pass_vjp_fwd(wk, wv, kd, qg, p, a, s0, precision, use_pallas):
+    o, states, s_fin = _state_pass_fwd_impl(
+        wk, wv, kd, qg, p, a, s0, precision, use_pallas
+    )
+    return (o, s_fin), (wk, wv, kd, qg, p, a, states)
+
+
+def _state_pass_vjp_bwd(precision, use_pallas, res, cts):
+    wk, wv, kd, qg, p, a, states = res
+    do, ds_fin = cts
+    do = jnp.asarray(do, jnp.float32)
+    ds_fin = jnp.asarray(ds_fin, jnp.float32)
+    if use_pallas:
+        from . import delta_rule_pallas as _dp
+
+        du, ds_after, ds0 = _dp.state_pass_bwd_seq(
+            wk, kd, qg, p, a, do, ds_fin, precision=precision
+        )
+    else:
+        du, ds_after, ds0 = _state_pass_bwd_scan(
+            wk, kd, qg, p, a, do, ds_fin, precision
+        )
+    grads = _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision)
+    return (*grads, ds0)
+
+
+_state_pass.defvjp(_state_pass_vjp_fwd, _state_pass_vjp_bwd)
+
+
+# ---- memory-lean end-to-end VJP ------------------------------------------
+
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7, 8))
+def _delta_core(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
+    prep = _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision)
+    o, _, s_fin = _state_pass_fwd_impl(*prep, h0, precision, use_pallas)
+    return o, s_fin
+
+
+def _delta_core_fwd(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
+    prep = _chunk_prep(q, k, v, log_alpha, beta, chunk_size, precision)
+    o, states, s_fin = _state_pass_fwd_impl(*prep, h0, precision, use_pallas)
+    # Residuals: the inputs plus the L / C chunk-boundary states. Everything
+    # chunk-local is recomputed in the backward pass.
+    return (o, s_fin), (q, k, v, log_alpha, beta, states)
+
+
+def _delta_core_bwd(chunk_size, precision, use_pallas, res, cts):
+    q, k, v, log_alpha, beta, states = res
+    prep, prep_vjp = jax.vjp(
+        lambda *x: _chunk_prep(*x, chunk_size, precision), q, k, v, log_alpha, beta
+    )
+    wk, wv, kd, qg, p, a = prep
+    d_wk, d_wv, d_kd, d_qg, d_p, d_a, d_h0 = _state_pass_vjp_bwd(
+        precision, use_pallas, (wk, wv, kd, qg, p, a, states), cts
+    )
+    return (*prep_vjp((d_wk, d_wv, d_kd, d_qg, d_p, d_a)), d_h0)
+
+
+_delta_core.defvjp(_delta_core_fwd, _delta_core_bwd)
+
+
+def _chunked_impl(
+    q,
+    k,
+    v,
+    log_alpha,
+    beta,
+    h0,
+    *,
+    chunk_size,
+    qk_l2norm,
+    precision,
+    use_pallas,
+    lean=True,
+):
+    dtype = q.dtype
+    q, k, v, log_alpha, beta, h0 = _prepare(q, k, v, log_alpha, beta, h0, qk_l2norm)
+    b, h, seq, _ = q.shape
+    dv = v.shape[-1]
+    c = int(chunk_size)
+    if c <= 0:
+        raise ValueError(f"chunk_size must be positive, got {chunk_size}.")
+    pad = (-seq) % c
+    if pad:
+        # beta = 0 and log_alpha = 0 on padded steps leave the state unchanged.
+        cfg = ((0, 0), (0, 0), (0, pad))
+        q, k, v = (jnp.pad(x, cfg + ((0, 0),)) for x in (q, k, v))
+        log_alpha = jnp.pad(log_alpha, cfg)
+        beta = jnp.pad(beta, cfg)
+    h0 = h0.astype(jnp.float32)
+    if lean:
+        o, s_fin = _delta_core(q, k, v, log_alpha, beta, h0, c, precision, use_pallas)
+    else:  # store every chunk-local intermediate (benchmark baseline)
+        prep = _chunk_prep(q, k, v, log_alpha, beta, c, precision)
+        o, s_fin = _state_pass(*prep, h0, precision, use_pallas)
+    o = o.reshape(b, h, seq + pad, dv)[:, :, :seq]
+    return o.astype(dtype), s_fin
+
+
+def gated_delta_rule_chunked(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array | None,
+    beta: jax.Array,
+    h0: jax.Array | None = None,
+    *,
+    chunk_size: int = 64,
+    qk_l2norm: bool = False,
+    precision=None,
+) -> tuple[jax.Array, jax.Array]:
+    """Chunkwise-parallel gated delta rule in pure JAX (the CPU path).
+
+    Same contract as :func:`gated_delta_rule_recurrent`. ``L`` need not be a
+    multiple of ``chunk_size`` (inputs are padded with ``beta = 0`` steps).
+    ``precision`` is forwarded to the matmuls (``None`` = backend default,
+    which is TF32 for fp32 inputs on Ampere GPUs).
+    """
+    return _chunked_impl(
+        q,
+        k,
+        v,
+        log_alpha,
+        beta,
+        h0,
+        chunk_size=chunk_size,
+        qk_l2norm=qk_l2norm,
+        precision=precision,
+        use_pallas=False,
+    )
+
+
+def gated_delta_rule_pallas(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array | None,
+    beta: jax.Array,
+    h0: jax.Array | None = None,
+    *,
+    chunk_size: int = 64,
+    qk_l2norm: bool = False,
+    precision=None,
+) -> tuple[jax.Array, jax.Array]:
+    """Chunked gated delta rule with Pallas-Triton inter-chunk kernels (GPU)."""
+    return _chunked_impl(
+        q,
+        k,
+        v,
+        log_alpha,
+        beta,
+        h0,
+        chunk_size=chunk_size,
+        qk_l2norm=qk_l2norm,
+        precision=precision,
+        use_pallas=True,
+    )
+
+
+@jax.named_call
+def gated_delta_rule(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    log_alpha: jax.Array | None,
+    beta: jax.Array,
+    h0: jax.Array | None = None,
+    *,
+    chunk_size: int = 64,
+    qk_l2norm: bool = False,
+    implementation: Implementation = "auto",
+    precision=None,
+) -> tuple[jax.Array, jax.Array]:
+    """Gated delta rule ``S_t = a_t (I - b_t k_t k_t^T) S_{t-1} + b_t k_t v_t^T``.
+
+    Args:
+        q, k: ``[B, H, L, Dk]`` queries / keys (L2-normalize them, e.g. via
+            ``qk_l2norm=True``, for a contractive transition).
+        v: ``[B, H, L, Dv]`` values.
+        log_alpha: ``[B, H, L]`` log-gate ``<= 0`` or ``None`` (DeltaNet).
+        beta: ``[B, H, L]`` write strengths in ``(0, 1)``.
+        h0: optional initial state ``[B, H, Dk, Dv]``.
+        chunk_size: tokens per chunk of the chunkwise-parallel form.
+        qk_l2norm: L2-normalize ``q`` and ``k`` inside the op.
+        implementation: ``"recurrent"`` (token scan), ``"chunked"`` (pure
+            JAX, default on CPU/TPU), ``"pallas"`` (Pallas-Triton inter-chunk
+            kernels, GPU) or ``"auto"``.
+        precision: matmul precision for the chunked forms.
+
+    Returns:
+        ``(o, final_state)``: ``[B, H, L, Dv]`` in ``q.dtype`` and
+        ``[B, H, Dk, Dv]`` in fp32.
+    """
+    kwargs = dict(qk_l2norm=qk_l2norm)
+    if implementation == "auto":
+        implementation = _auto_implementation(q, v)
+    if implementation == "recurrent":
+        return gated_delta_rule_recurrent(q, k, v, log_alpha, beta, h0, **kwargs)
+    if implementation == "chunked":
+        return gated_delta_rule_chunked(
+            q,
+            k,
+            v,
+            log_alpha,
+            beta,
+            h0,
+            chunk_size=chunk_size,
+            precision=precision,
+            **kwargs,
+        )
+    if implementation == "pallas":
+        return gated_delta_rule_pallas(
+            q,
+            k,
+            v,
+            log_alpha,
+            beta,
+            h0,
+            chunk_size=chunk_size,
+            precision=precision,
+            **kwargs,
+        )
+    raise ValueError(f"Unknown implementation {implementation!r}.")
+
+
+def _auto_implementation(q, v) -> str:
+    del q, v
+    return "chunked"
