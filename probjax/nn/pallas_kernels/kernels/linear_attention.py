@@ -174,28 +174,29 @@ def _linear_attention_kernel(
     output_ref,
     final_state_ref,
     *,
-    feature_map: FeatureMap,
     chunk_size: int,
 ):
-    """One-program-per-head chunked kernel, safe for unordered GPU grids."""
-    seq_len, head_dim = q_ref.shape
-    feature_fn = get_feature_map(feature_map).fwd
+    """One-program-per-head chunked kernel, safe for unordered GPU grids.
+
+    ``q_ref``/``k_ref`` hold feature-mapped queries/keys (float32). The feature
+    maps concatenate positive and negative halves, which Triton cannot lower,
+    so they are applied outside the kernel.
+    """
+    seq_len = q_ref.shape[0]
     state = h0_ref[:, :].astype(jnp.float32)
     causal = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.float32))
 
     def chunk_step(chunk_index, current_state):
         start = chunk_index * chunk_size
-        q = pallas_primitives.load(
+        q_features = pallas_primitives.load(
             q_ref, (pl.dslice(start, chunk_size), slice(None))
-        ).astype(jnp.float32)
-        k = pallas_primitives.load(
+        )
+        k_features = pallas_primitives.load(
             k_ref, (pl.dslice(start, chunk_size), slice(None))
-        ).astype(jnp.float32)
+        )
         v = pallas_primitives.load(
             v_ref, (pl.dslice(start, chunk_size), slice(None))
         ).astype(jnp.float32)
-        q_features = feature_fn(q).astype(jnp.float32)
-        k_features = feature_fn(k).astype(jnp.float32)
         inter = jnp.dot(q_features, current_state)
         intra = jnp.dot(q_features, k_features.T) * causal
         output = inter + jnp.dot(intra, v)
@@ -208,6 +209,50 @@ def _linear_attention_kernel(
 
     state = jax.lax.fori_loop(0, seq_len // chunk_size, chunk_step, state)
     final_state_ref[:, :] = state
+
+
+# Fallback when the device cannot be queried: the smallest opt-in shared memory
+# per block among current NVIDIA GPUs (consumer Ampere/Ada, 99 KB).
+_DEFAULT_SMEM_BYTES = 101376
+
+
+def _kernel_smem_bytes(
+    chunk_size: int, feature_dim: int, head_dim: int, value_dtype
+) -> int:
+    """Shared memory Triton requests for one program.
+
+    Fitted to measured requests on an RTX 3090 (head_dim 64): float32 values
+    need 160 KiB at chunk 64 and 288 KiB at chunk 128; bfloat16 values need
+    120 KiB at chunk 32 (extra conversion buffers). The [feature_dim, head_dim]
+    float32 state is resident for the whole program.
+    """
+    per_row = (
+        2 * feature_dim + (4 if jnp.dtype(value_dtype) == jnp.float32 else 7) * head_dim
+    )
+    return 4 * chunk_size * per_row + 4 * feature_dim * head_dim
+
+
+def _fit_chunk_size(
+    chunk_size: int, feature_dim: int, head_dim: int, value_dtype
+) -> int | None:
+    """Largest chunk <= ``chunk_size`` (halving, >= 16) whose tiles fit in
+    shared memory, or ``None`` if none does on this device."""
+    from .attention import _query_triton_smem_limit
+
+    try:
+        limit = _query_triton_smem_limit() or _DEFAULT_SMEM_BYTES
+    except Exception:
+        limit = _DEFAULT_SMEM_BYTES
+    while _kernel_smem_bytes(chunk_size, feature_dim, head_dim, value_dtype) > limit:
+        if chunk_size <= 16:
+            return None
+        chunk_size //= 2
+    return chunk_size
+
+
+def _gpu_chunk_size(q: jax.Array, v: jax.Array, chunk_size: int) -> int | None:
+    feature_dim = 2 * q.shape[-1]  # both feature maps concatenate +/- halves
+    return _fit_chunk_size(chunk_size, feature_dim, v.shape[-1], v.dtype)
 
 
 def _linear_attention_pallas_impl(
@@ -230,13 +275,37 @@ def _linear_attention_pallas_impl(
         raise ValueError("h0 must have shape [batch, heads, 2 * head_dim, head_dim]")
 
     repeats = num_heads // num_kv_heads
+    # Feature maps are per-token, so apply them once outside the kernel (in
+    # float32, as the kernel previously did per chunk).
+    feature_fn = get_feature_map(feature_map).fwd
+    q_features = feature_fn(q.astype(jnp.float32))
+    k_features = feature_fn(k.astype(jnp.float32))
+    feature_dim = q_features.shape[-1]
+    if jax.default_backend() == "gpu" and not use_interpret_mode():
+        # The chunk only tiles the recurrence; any divisor gives the same result.
+        fitted = _gpu_chunk_size(q, v, chunk_size)
+        if fitted is None:
+            raise ValueError(
+                "residual_linear_attention_pallas: no chunk size fits this GPU's "
+                f"shared memory for head_dim={head_dim}, dtype={v.dtype}; use "
+                "implementation='scan' (or 'auto', which falls back to it)."
+            )
+        chunk_size = fitted
     q_spec = pl.BlockSpec(
-        block_shape=(None, None, seq_len, head_dim),
+        block_shape=(None, None, seq_len, feature_dim),
         index_map=lambda b, h: (b, h, 0, 0),
+    )
+    k_spec = pl.BlockSpec(
+        block_shape=(None, None, seq_len, feature_dim),
+        index_map=lambda b, h: (b, h // repeats, 0, 0),
     )
     kv_spec = pl.BlockSpec(
         block_shape=(None, None, seq_len, head_dim),
         index_map=lambda b, h: (b, h // repeats, 0, 0),
+    )
+    out_spec = pl.BlockSpec(
+        block_shape=(None, None, seq_len, head_dim),
+        index_map=lambda b, h: (b, h, 0, 0),
     )
     state_spec = pl.BlockSpec(
         block_shape=(None, None, 2 * head_dim, head_dim),
@@ -245,20 +314,16 @@ def _linear_attention_pallas_impl(
     output_shape = jax.ShapeDtypeStruct(q.shape, v.dtype)
     state_shape = jax.ShapeDtypeStruct(h0.shape, jnp.float32)
     backend = "triton" if jax.default_backend() == "gpu" else None
-    kernel = functools.partial(
-        _linear_attention_kernel,
-        feature_map=feature_map,
-        chunk_size=chunk_size,
-    )
+    kernel = functools.partial(_linear_attention_kernel, chunk_size=chunk_size)
     return pallas_call_compat(
         kernel,
-        in_specs=(q_spec, kv_spec, kv_spec, state_spec),
-        out_specs=(q_spec, state_spec),
+        in_specs=(q_spec, k_spec, kv_spec, state_spec),
+        out_specs=(out_spec, state_spec),
         out_shape=(output_shape, state_shape),
         grid=(batch_size, num_heads),
         interpret=use_interpret_mode(),
         backend=backend,
-    )(q, k, v, h0.astype(jnp.float32))
+    )(q_features, k_features, v, h0.astype(jnp.float32))
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5))
@@ -341,6 +406,8 @@ def residual_linear_attention(
         implementation == "auto"
         and jax.default_backend() == "gpu"
         and q.shape[2] % chunk_size == 0
+        and k.shape[-1] == q.shape[-1] == v.shape[-1]
+        and _gpu_chunk_size(q, v, chunk_size) is not None
     )
     if use_pallas:
         return residual_linear_attention_pallas(
