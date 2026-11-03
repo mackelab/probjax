@@ -127,6 +127,8 @@ def test_generic_kernel_mv_with_vector_params_matches_naive_and_grads():
     v = jax.random.normal(key_v, (batch_size, m, o), dtype=jnp.float32)
     target = jax.random.normal(key_t, (batch_size, n, o), dtype=jnp.float32)
     params = jnp.asarray([0.7, 1.2], dtype=jnp.float32)
+    # Interpret mode on GPU uses TF32 dots; the dense reference differs at ~1e-3.
+    scale = 1.0 if jax.default_backend() == "cpu" else 10.0
 
     out_ref = kernel_mv_naive(q, k, v, params, _scaled_rbf_kernel_fn)
     out = kernel_mv(
@@ -141,7 +143,7 @@ def test_generic_kernel_mv_with_vector_params_matches_naive_and_grads():
         block_o=8,
         interpret=True,
     )
-    assert jnp.allclose(out, out_ref, atol=1e-4, rtol=1e-4)
+    assert jnp.allclose(out, out_ref, atol=1e-4 * scale, rtol=1e-4 * scale)
 
     def loss_kernel(q_, k_, v_, p_):
         out_ = kernel_mv(
@@ -165,10 +167,18 @@ def test_generic_kernel_mv_with_vector_params_matches_naive_and_grads():
     grads_kernel = jax.grad(loss_kernel, argnums=(0, 1, 2, 3))(q, k, v, params)
     grads_ref = jax.grad(loss_naive, argnums=(0, 1, 2, 3))(q, k, v, params)
 
-    assert jnp.allclose(grads_kernel[0], grads_ref[0], atol=4e-3, rtol=3e-3)
-    assert jnp.allclose(grads_kernel[1], grads_ref[1], atol=4e-3, rtol=3e-3)
-    assert jnp.allclose(grads_kernel[2], grads_ref[2], atol=4e-3, rtol=3e-3)
-    assert jnp.allclose(grads_kernel[3], grads_ref[3], atol=4e-3, rtol=3e-3)
+    assert jnp.allclose(
+        grads_kernel[0], grads_ref[0], atol=4e-3 * scale, rtol=3e-3 * scale
+    )
+    assert jnp.allclose(
+        grads_kernel[1], grads_ref[1], atol=4e-3 * scale, rtol=3e-3 * scale
+    )
+    assert jnp.allclose(
+        grads_kernel[2], grads_ref[2], atol=4e-3 * scale, rtol=3e-3 * scale
+    )
+    assert jnp.allclose(
+        grads_kernel[3], grads_ref[3], atol=4e-3 * scale, rtol=3e-3 * scale
+    )
 
 
 def test_rbf_kde_density_matches_naive_density():
@@ -637,3 +647,226 @@ def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch)
 
     with pytest.raises(RuntimeError, match="pallas launch failed"):
         ssd(q, k, v, log_alpha)
+
+
+# ---------------------------------------------------------------------------
+# Blocked XLA path (CPU default) and dispatch
+# ---------------------------------------------------------------------------
+
+kernel_mv_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.kernel_mv")
+
+
+def _rel(a, b):
+    return float(jnp.linalg.norm(a - b) / jnp.linalg.norm(b))
+
+
+def _xla_kernel_mv(q, k, v, p, kernel_fn, kernel_vjp_fn, **kwargs):
+    return kernel_mv(
+        q, k, v, p, kernel_fn, kernel_vjp_fn, implementation="xla", **kwargs
+    )
+
+
+@pytest.mark.parametrize("tile_elements", [None, 64, 300])
+@pytest.mark.parametrize(
+    "batch_size, n, m, d, o", [(1, 13, 17, 7, 5), (2, 37, 29, 3, 1), (3, 8, 40, 2, 4)]
+)
+def test_xla_kernel_mv_matches_naive_forward_and_grads(
+    tile_elements, batch_size, n, m, d, o
+):
+    """Multi-block (tiny tile budgets) and single-block XLA path vs dense."""
+    kq, kk, kv, kt = jax.random.split(jax.random.PRNGKey(3), 4)
+    q = jax.random.normal(kq, (batch_size, n, d))
+    k = jax.random.normal(kk, (batch_size, m, d))
+    v = jax.random.normal(kv, (batch_size, m, o))
+    target = jax.random.normal(kt, (batch_size, n, o))
+    params = jnp.asarray([0.7, 1.2])
+
+    def run(q_, k_, v_, p_):
+        return _xla_kernel_mv(
+            q_,
+            k_,
+            v_,
+            p_,
+            _scaled_rbf_kernel_fn,
+            _scaled_rbf_kernel_vjp_fn,
+            xla_tile_elements=tile_elements,
+        )
+
+    def ref(q_, k_, v_, p_):
+        return kernel_mv_naive(q_, k_, v_, p_, _scaled_rbf_kernel_fn)
+
+    with jax.default_matmul_precision("highest"):
+        out, out_ref = run(q, k, v, params), ref(q, k, v, params)
+        assert out.shape == out_ref.shape == (batch_size, n, o)
+        assert _rel(out, out_ref) < 1e-5
+
+        def loss(fn):
+            return lambda *a: jnp.sum((fn(*a) - target) ** 2)
+
+        grads = jax.grad(loss(run), argnums=(0, 1, 2, 3))(q, k, v, params)
+        grads_ref = jax.grad(loss(ref), argnums=(0, 1, 2, 3))(q, k, v, params)
+    for g, g_ref in zip(grads, grads_ref, strict=True):
+        assert g.shape == g_ref.shape
+        assert _rel(g, g_ref) < 1e-4
+
+
+def test_xla_block_rows_bounds_tile_and_covers_rows():
+    rows = kernel_mv_mod._xla_block_rows
+    assert rows(1, 100, 100, None) == 100  # fits: single dense block
+    for bsz, n, m, budget in [
+        (1, 1000, 1000, 10_000),
+        (2, 999, 77, 5_000),
+        (1, 50, 10**6, 10),
+    ]:
+        r = rows(bsz, n, m, budget)
+        assert r % 8 == 0 and r >= 8
+        assert bsz * r * m <= max(budget, bsz * 8 * m) * 1.2  # within budget (+balance)
+        num_blocks = -(-n // r)
+        assert num_blocks * r - n < 8 * num_blocks  # padding stays small
+
+
+def test_kernel_mv_cpu_default_uses_xla_path(monkeypatch):
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU dispatch test")
+
+    def _no_pallas(*args, **kwargs):
+        raise AssertionError("Pallas path must not run on CPU by default")
+
+    monkeypatch.setattr(kernel_mv_mod, "_kernel_mv_pallas", _no_pallas)
+    q = jnp.ones((1, 5, 2))
+    v = jnp.ones((1, 5, 3))
+    out = rbf_kernel_mv(q, q, v, 1.0)
+    assert out.shape == (1, 5, 3)
+    dens = rbf_kde_density(q[0], q[0], 1.0)
+    assert dens.shape == (5,)
+    # interpret=True keeps selecting the Pallas path.
+    with pytest.raises(AssertionError, match="must not run"):
+        rbf_kernel_mv(q, q, v, 1.0, interpret=True)
+
+
+def test_kernel_mv_rejects_unknown_implementation():
+    q = jnp.ones((1, 4, 2))
+    with pytest.raises(ValueError, match="implementation"):
+        rbf_kernel_mv(q, q, q, 1.0, implementation="cuda")
+
+
+def test_xla_kernel_mv_bfloat16_runs_and_keeps_dtype():
+    kq, kv = jax.random.split(jax.random.PRNGKey(4))
+    q = jax.random.normal(kq, (1, 33, 4)).astype(jnp.bfloat16)
+    v = jax.random.normal(kv, (1, 33, 2)).astype(jnp.bfloat16)
+    out = rbf_kernel_mv(q, q, v, 1.0, implementation="xla")
+    ref = rbf_kernel_mv_naive(
+        q.astype(jnp.float32), q.astype(jnp.float32), v.astype(jnp.float32), 1.0
+    )
+    assert out.dtype == jnp.bfloat16
+    assert _rel(out.astype(jnp.float32), ref) < 3e-2
+    g = jax.grad(
+        lambda q_: jnp.sum(
+            rbf_kernel_mv(q_, q, v, 1.0, implementation="xla").astype(jnp.float32)
+        )
+    )(q)
+    assert g.dtype == jnp.bfloat16 and bool(jnp.all(jnp.isfinite(g)))
+
+
+def test_xla_kernel_mv_memory_is_bounded_in_fwd_and_bwd():
+    """Neither pass may materialize the [N, M] kernel matrix (regression)."""
+    n = m = 4096  # dense [N, M] = 64 MiB >> tiles + GPU gemm workspace (~4 MiB)
+    q = jnp.zeros((1, n, 4))
+    v = jnp.zeros((1, m, 2))
+    dense_bytes = n * m * 4
+
+    def f(q_, k_, v_):
+        return rbf_kernel_mv(q_, k_, v_, 1.0, implementation="xla")
+
+    def temp_bytes(fn):
+        return fn.lower(q, q, v).compile().memory_analysis().temp_size_in_bytes
+
+    budget = 1 << 16  # 64k-element tiles
+
+    def f_small(q_, k_, v_):
+        return kernel_mv(
+            q_,
+            k_,
+            v_,
+            jnp.asarray(1.0),
+            kernel_mv_mod._rbf_kernel_fn,
+            kernel_mv_mod._rbf_kernel_vjp_fn,
+            implementation="xla",
+            xla_tile_elements=budget,
+        )
+
+    fwd = temp_bytes(jax.jit(f_small))
+    bwd = temp_bytes(jax.jit(jax.grad(lambda *a: jnp.sum(f_small(*a) ** 2), (0, 1, 2))))
+    assert fwd < dense_bytes / 8
+    assert bwd < dense_bytes / 4
+    # Only (q, k, v, params) are saved for the backward pass.
+    _, vjp_fn = jax.vjp(f, q, q, v)
+    saved = sum(x.size for x in jax.tree.leaves(vjp_fn) if hasattr(x, "size"))
+    assert saved <= 2 * (q.size + q.size + v.size) + 16
+
+
+_requires_accelerator = pytest.mark.skipif(
+    jax.default_backend() == "cpu", reason="needs a GPU/TPU Pallas backend"
+)
+
+
+@_requires_accelerator
+@pytest.mark.parametrize(
+    "n, m, d, o, block_o",
+    [
+        (1000, 777, 3, 1, 64),
+        (256, 300, 8, 16, 64),
+        (65, 9, 33, 5, 64),
+        # Regressions: D in {1, 2, 4} silently miscomputed, other non power-of-two
+        # D failed to lower, block_o=1 (kde_density) gave wrong dq/dk/dparams.
+        (200, 150, 1, 16, 64),
+        (200, 150, 2, 1, 1),
+        (200, 150, 4, 3, 1),
+        (200, 150, 8, 1, 1),
+    ],
+)
+def test_pallas_kernel_mv_relative_error_vs_highest_reference(n, m, d, o, block_o):
+    """GPU Pallas vs XLA at HIGHEST precision; TF32 bounds the error to ~1e-3."""
+    kq, kk, kv = jax.random.split(jax.random.PRNGKey(5), 3)
+    q = jax.random.normal(kq, (2, n, d))
+    k = jax.random.normal(kk, (2, m, d))
+    v = jax.random.normal(kv, (2, m, o))
+    ls = jnp.asarray(float(d) ** 0.5)
+
+    def loss(impl):
+        return lambda *a: (
+            0.5 * jnp.sum(rbf_kernel_mv(*a, block_o=block_o, implementation=impl) ** 2)
+        )
+
+    out = rbf_kernel_mv(q, k, v, ls, block_o=block_o, implementation="pallas")
+    grads = jax.grad(loss("pallas"), argnums=(0, 1, 2, 3))(q, k, v, ls)
+    with jax.default_matmul_precision("highest"):
+        out_ref = rbf_kernel_mv(q, k, v, ls, implementation="xla")
+        grads_ref = jax.grad(loss("xla"), argnums=(0, 1, 2, 3))(q, k, v, ls)
+    assert _rel(out, out_ref) < 5e-3
+    for g, g_ref in zip(grads, grads_ref, strict=True):
+        assert _rel(g, g_ref) < 5e-3
+
+
+@_requires_accelerator
+def test_pallas_kde_density_on_accelerator_matches_xla():
+    kq, kx = jax.random.split(jax.random.PRNGKey(6))
+    query = jax.random.normal(kq, (300, 3))
+    data = jax.random.normal(kx, (500, 3))
+    out = rbf_kde_density(query, data, 0.7, log_density=True, implementation="pallas")
+    with jax.default_matmul_precision("highest"):
+        ref = rbf_kde_density(query, data, 0.7, log_density=True, implementation="xla")
+    assert float(jnp.max(jnp.abs(out - ref))) < 1e-2
+
+    def grads(impl):
+        def f(query_, ls_):
+            dens = rbf_kde_density(query_, data, ls_, implementation=impl)
+            return jnp.sum(jnp.log(dens))
+
+        return jax.grad(f, argnums=(0, 1))(query, jnp.asarray(0.7))
+
+    g = grads("pallas")
+    with jax.default_matmul_precision("highest"):
+        g_ref = grads("xla")
+    for a, b in zip(g, g_ref, strict=True):
+        assert _rel(a, b) < 5e-3
