@@ -14,7 +14,10 @@ Implementations (``--impls``):
   end-to-end VJP (residuals: inputs + chunk-boundary states).
 * ``chunked_fat`` -- same forward, but the chunk-local WY quantities are
   stored for backward instead of recomputed (memory baseline).
-* ``pallas``      -- chunked form with Pallas-Triton inter-chunk kernels (GPU).
+* ``pallas``      -- ``gated_delta_rule_pallas`` (``mode="fused"``): Pallas
+  ``(I + A)^-1`` + fused sequential kernels that rebuild the WY quantities per
+  chunk (GPU).
+* ``pallas_unfused`` -- WY quantities from XLA, Pallas state kernels only.
 * ``ssd``         -- Mamba-2 SSD (``probjax.nn.pallas_kernels.ssd``) at equal
   shapes, as a cost reference (no delta-rule correction term).
 
@@ -80,24 +83,26 @@ def impl_fn(name, chunk_size=64):
             chunk_size=chunk_size,
             precision=jax.lax.Precision.HIGHEST,
         )[0]
+    if name == "pallas_unfused":
+        return lambda *a: dr.gated_delta_rule_pallas(
+            *a, chunk_size=chunk_size, mode="pallas"
+        )[0]
     if name == "ssd":
         from probjax.nn.pallas_kernels import ssd
 
         def f(q, k, v, log_alpha, beta):
             del beta
-            return ssd(
-                q.astype(jnp.float32) if jax.default_backend() == "cpu" else q,
-                k.astype(jnp.float32) if jax.default_backend() == "cpu" else k,
-                v.astype(jnp.float32),
-                log_alpha,
-            )
+            # fp32 q/k: ssd with bf16 q/k and fp32 v fails to lower (dtype
+            # mismatch of the output), and it requires fp32 v / log_alpha.
+            f32 = lambda x: x.astype(jnp.float32)  # noqa: E731
+            return ssd(f32(q), f32(k), f32(v), log_alpha)
 
         return f
     raise ValueError(name)
 
 
 def supported(name, dk, dv, chunk_size, device):
-    if name == "pallas":
+    if name in ("pallas", "pallas_unfused"):
         from probjax.nn.pallas_kernels.kernels import delta_rule_pallas as dp
 
         return device == "gpu" and dp.supports_shape(chunk_size, dk, dv)
@@ -259,6 +264,9 @@ def main():
         help="skip the token scan above this length (it is O(L) sequential)",
     )
     p.add_argument("--peak", action="store_true", help="subprocess device peaks")
+    p.add_argument(
+        "--peak-seq", nargs="+", type=int, default=None, help="limit --peak to these L"
+    )
     p.add_argument("--no-err", action="store_true")
     p.add_argument("--append", action="store_true", help="merge into --output")
     p.add_argument("--peak-child", type=str, default=None, help=argparse.SUPPRESS)
@@ -303,6 +311,8 @@ def main():
     if a.peak:
         for row in list(rows):
             if "error" in row or "skipped" in row or "peak_mb" in row:
+                continue
+            if a.peak_seq and row["seq"] not in a.peak_seq:
                 continue
             spec = dict(
                 impl=row["impl"],

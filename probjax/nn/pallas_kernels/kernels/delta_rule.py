@@ -29,12 +29,19 @@ Implementations
   ``U = W_v - W_k S_0`` with chunk-local ``W_v, W_k``; only the ``L / C``
   chunk-boundary states are then propagated sequentially. Every decay factor is
   ``exp`` of a non-positive number, so no division by the cumulative gate occurs.
-  The inter-chunk pass is a ``custom_vjp`` primitive that keeps only the chunk
-  boundary states (``L / C * Dk * Dv`` per head) as residuals and propagates the
-  state cotangent backwards in one reverse scan; nothing of size
-  ``L * Dk * Dv`` is ever materialized. This is the CPU path.
-* :func:`gated_delta_rule_pallas` -- the same algorithm with the sequential
-  inter-chunk pass (forward and backward) as Pallas-Triton kernels on GPU.
+  ``T = (I + A)^{-1}`` is formed explicitly by a block forward substitution
+  (16 x 16 row substitution + pairwise block merges -- only small matmuls;
+  XLA:CPU's batched ``triangular_solve`` is ~1000x slower).
+  The whole op is one ``custom_vjp`` with a hand-written backward: residuals
+  are only the inputs and the ``L / C`` chunk-boundary states
+  (``L / C * Dk * Dv`` per head); the chunk-local WY quantities are recomputed
+  (behind an optimization barrier, so XLA cannot CSE them with the forward),
+  the state cotangent is propagated in one reverse scan and the chunk-local
+  VJP is closed-form (``dA = -T^T dT T^T``). Nothing of size ``L * Dk * Dv``
+  is ever materialized. This is the CPU path.
+* :func:`gated_delta_rule_pallas` -- the same algorithm on GPU with
+  Pallas-Triton kernels for ``(I + A)^{-1}`` and for the sequential
+  forward / reverse state passes (optionally fused with the WY rebuild).
 * :func:`gated_delta_rule` -- public entry point dispatching by backend.
 
 Layout follows ``ssd``: ``q, k: [B, H, L, Dk]``, ``v: [B, H, L, Dv]``,
@@ -439,13 +446,18 @@ def _state_pass_bwd(wk, kd, qg, p, a, do, ds_fin, precision, use_pallas):
 
 
 def _fused_ok(mode, chunk_size, dk, dv, precision):
-    if mode != "fused":
+    """Whether to use the fused Pallas state kernels (WY rebuilt on chip)."""
+    if mode not in ("fused", "auto"):
         return False
     from . import delta_rule_pallas as _dp
 
     # fp32 (HIGHEST) dots need more shared memory than a 3090 block has at Dk=128.
     highest = precision in ("highest", lax.Precision.HIGHEST)
-    return _dp.prep_supported(chunk_size, dk, dv) and not (highest and dk > 64)
+    if not _dp.prep_supported(chunk_size, dk, dv) or (highest and dk > 64):
+        return False
+    # Measured on a 3090: at Dk = 128 the fused kernels spill (bf16 fwd 21 ms vs
+    # 5.7 ms unfused at B4 H8 L8192), at Dk = 64 they win (1.9 vs 2.6 ms).
+    return mode == "fused" or dk <= 64
 
 
 def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode):
@@ -459,7 +471,7 @@ def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode):
             ch(q), ch(k), ch(v), g, ch(beta), t, h0, precision=precision
         )
         return o, s_fin, states, g, (t,)
-    use_pallas = mode in ("pallas", "fused")
+    use_pallas = mode in ("pallas", "fused", "auto")
     prep = _chunk_prep(q, k, v, g, beta, chunk_size, precision, use_pallas)
     wk, wv, kd, qg, p, t = prep
     a = jnp.exp(g[..., -1])
@@ -498,7 +510,7 @@ def _delta_core_bwd(chunk_size, precision, mode, store_prep, res, cts):
     ds_fin = jnp.asarray(ds_fin, jnp.float32)
     g = _chunk_gate(log_alpha, chunk_size)
     fused = _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision)
-    use_pallas = mode in ("pallas", "fused")
+    use_pallas = mode in ("pallas", "fused", "auto")
     if prep is None:
         # The barrier stops XLA from CSE-ing this recompute with the forward
         # prep (which would keep every chunk-local intermediate alive).
@@ -615,15 +627,16 @@ def gated_delta_rule_pallas(
     chunk_size: int = 64,
     qk_l2norm: bool = False,
     precision=None,
-    mode: Literal["fused", "pallas"] = "fused",
+    mode: Literal["auto", "fused", "pallas"] = "auto",
 ) -> tuple[jax.Array, jax.Array]:
     """Chunked gated delta rule with Pallas-Triton kernels (GPU).
 
-    ``mode="fused"`` (default): ``(I + A)^{-1}`` by a Pallas block forward
-    substitution and sequential state kernels that rebuild the WY quantities
-    per chunk from ``q, k, v`` (nothing chunk-local is written to HBM in the
-    forward pass). ``mode="pallas"``: WY quantities from XLA, Pallas state
-    kernels only. Shapes the kernels do not support fall back to XLA pieces.
+    ``(I + A)^{-1}`` always comes from a Pallas block forward substitution.
+    ``mode="fused"``: sequential state kernels rebuild the WY quantities per
+    chunk from ``q, k, v`` (nothing chunk-local is written to HBM in the
+    forward pass). ``mode="pallas"``: WY quantities from XLA einsums, Pallas
+    state kernels only. ``"auto"``: fused for ``Dk <= 64``, else ``"pallas"``.
+    Shapes the kernels do not support fall back to the XLA pieces.
     """
     return _chunked_impl(
         q,
@@ -665,8 +678,11 @@ def gated_delta_rule(
         chunk_size: tokens per chunk of the chunkwise-parallel form.
         qk_l2norm: L2-normalize ``q`` and ``k`` inside the op.
         implementation: ``"recurrent"`` (token scan), ``"chunked"`` (pure
-            JAX, default on CPU/TPU), ``"pallas"`` (Pallas-Triton inter-chunk
-            kernels, GPU) or ``"auto"``.
+            JAX, default on CPU/TPU), ``"pallas"`` (Pallas-Triton kernels,
+            GPU) or ``"auto"`` (``"pallas"`` on GPU when ``chunk_size`` is
+            16/32/64, ``Dk`` a power of two in ``[16, 128]`` and ``Dv`` a power
+            of two ``>= 16``, else
+            ``"chunked"``).
         precision: matmul precision for the chunked forms.
 
     Returns:
@@ -675,7 +691,7 @@ def gated_delta_rule(
     """
     kwargs = dict(qk_l2norm=qk_l2norm)
     if implementation == "auto":
-        implementation = _auto_implementation(q, v)
+        implementation = _auto_implementation(q, v, chunk_size)
     if implementation == "recurrent":
         return gated_delta_rule_recurrent(q, k, v, log_alpha, beta, h0, **kwargs)
     if implementation == "chunked":
@@ -705,6 +721,11 @@ def gated_delta_rule(
     raise ValueError(f"Unknown implementation {implementation!r}.")
 
 
-def _auto_implementation(q, v) -> str:
-    del q, v
+def _auto_implementation(q, v, chunk_size) -> str:
+    """Pallas on GPU for supported shapes, else the pure-JAX chunked form."""
+    if jax.default_backend() == "gpu":
+        from . import delta_rule_pallas as _dp
+
+        if _dp.prep_supported(chunk_size, q.shape[-1], v.shape[-1]):
+            return "pallas"
     return "chunked"
