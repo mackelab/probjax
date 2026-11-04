@@ -69,7 +69,7 @@ def impl_fn(name, chunk_size=64):
             chunk_size=chunk_size,
             qk_l2norm=False,
             precision=None,
-            use_pallas=False,
+            mode="xla",
             store_prep=True,
         )[0]
     if name == "pallas":

@@ -156,14 +156,17 @@ def _requires_gpu():
         pytest.skip("requires a GPU backend")
 
 
+@pytest.mark.parametrize("mode", ["fused", "pallas"])
 @pytest.mark.parametrize("dk,dv", [(16, 32), (64, 64), (128, 128)])
 @pytest.mark.parametrize("gated", [True, False])
-def test_pallas_matches_chunked_gpu(dk, dv, gated):
+def test_pallas_matches_chunked_gpu(dk, dv, gated, mode):
     _requires_gpu()
     args = _inputs(length=200, dk=dk, dv=dv, gated=gated)
     argnums = (0, 1, 2, 4, 5) + ((3,) if gated else ())
     ref = _chunked(64)
-    pal = lambda *a: dr.gated_delta_rule_pallas(*a, chunk_size=64, precision=HIGHEST)  # noqa: E731
+    pal = lambda *a: dr.gated_delta_rule_pallas(  # noqa: E731
+        *a, chunk_size=64, precision=HIGHEST, mode=mode
+    )
     o_ref, s_ref = jax.jit(ref)(*args)
     o, s = jax.jit(pal)(*args)
     assert _rel(o, o_ref) < 1e-4 and _rel(s, s_ref) < 1e-4
@@ -252,7 +255,7 @@ def test_store_prep_variant_matches():
             chunk_size=32,
             qk_l2norm=False,
             precision=HIGHEST,
-            use_pallas=False,
+            mode="xla",
             store_prep=True,
         )
 
@@ -262,16 +265,33 @@ def test_store_prep_variant_matches():
         assert _rel(a, b) < 1e-5
 
 
-@pytest.mark.parametrize("chunk,dk,dv", [(16, 16, 32), (32, 64, 64), (64, 128, 128)])
-def test_pallas_prep_matches_xla_gpu(chunk, dk, dv):
+@pytest.mark.parametrize("chunk", [16, 32, 64])
+def test_pallas_unit_lower_inverse_gpu(chunk):
     _requires_gpu()
     from probjax.nn.pallas_kernels.kernels import delta_rule_pallas as dp
 
-    q, k, v, la, beta, _ = _inputs(length=4 * chunk, dk=dk, dv=dv)
-    g = dr._chunk_gate(la, chunk)
-    ref = dr._chunk_prep_xla(q, k, v, g, beta, chunk, HIGHEST)
-    out = dp.chunk_prep(
-        q, k, v, g.reshape(beta.shape), beta, chunk=chunk, precision=HIGHEST
+    a = jnp.tril(0.5 * jax.random.normal(jax.random.key(0), (3, 5, chunk, chunk)), -1)
+    eye = jnp.eye(chunk)
+    ref = jax.lax.linalg.triangular_solve(
+        a + eye, jnp.broadcast_to(eye, a.shape), left_side=True, lower=True,
+        unit_diagonal=True,
+    )  # fmt: skip
+    assert _rel(dp.unit_lower_inverse(a, precision=HIGHEST), ref) < 1e-5
+
+
+@pytest.mark.parametrize("mode", ["fused", "pallas"])
+@pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
+def test_pallas_modes_default_precision_gpu(mode, dtype):
+    """TF32/bf16 tensor-core paths (incl. the fused kernels at Dk = 128)."""
+    _requires_gpu()
+    args = _inputs(length=256, dk=128, dv=128, dtype=dtype)
+    ref = _loss(dr.gated_delta_rule_recurrent)
+    f = _loss(lambda *a: dr.gated_delta_rule_pallas(*a, chunk_size=64, mode=mode))
+    val_ref, g_ref = jax.value_and_grad(ref, argnums=range(6))(
+        *(x.astype(jnp.float32) if x is not None else x for x in args)
     )
-    for a, b in zip(out, ref, strict=True):
-        assert _rel(a, b) < 1e-5
+    val, g = jax.jit(jax.value_and_grad(f, argnums=range(6)))(*args)
+    tol = 2e-2 if dtype == jnp.bfloat16 else 5e-3
+    assert abs(float(val) - float(val_ref)) / abs(float(val_ref)) < tol
+    for a, b in zip(g, g_ref, strict=True):
+        assert _rel(a, b) < 5 * tol

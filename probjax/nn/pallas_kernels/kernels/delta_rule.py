@@ -217,9 +217,13 @@ def _unit_lower_inverse(a: jax.Array, precision=None, base: int = 16) -> jax.Arr
     return inv[..., 0, :, :]
 
 
-def _unit_lower_inv(a, precision):
+def _unit_lower_inv(a, precision, use_pallas=False):
     """``(I + a)^{-1}`` for strictly lower-triangular ``a`` (explicit)."""
     c = a.shape[-1]
+    if use_pallas and c % 16 == 0 and c <= 64:
+        from . import delta_rule_pallas as _dp
+
+        return _dp.unit_lower_inverse(a, precision=precision)
     if jax.default_backend() == "gpu" or (c > 16 and c & (c - 1)):
         # cuBLAS batched trsm is fast; also the fallback for odd chunk sizes.
         eye = jnp.eye(c, dtype=a.dtype)
@@ -253,7 +257,30 @@ def _chunks(x, c):
     return x.astype(jnp.float32).reshape(b, h, seq // c, c, *x.shape[3:])
 
 
-def _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision):
+def _wy_inverse(k, g, beta, chunk_size, precision, use_pallas=False):
+    """``T = (I + A)^{-1}`` with ``A_ij = beta_i (k_i . k_j) exp(g_i - g_j)``
+    (``j < i``) for every chunk: ``[B, H, N, C, C]`` fp32."""
+    c = chunk_size
+    kc, bc = _chunks(k, c), _chunks(beta, c)
+    idx = jnp.arange(c)
+    strict = idx[:, None] > idx[None, :]
+    kk = _ein("bhncd,bhnsd->bhncs", kc, kc, precision=precision)
+    a_mat = jnp.where(strict, bc[..., :, None] * kk * _causal_decay(g), 0.0)
+    return _unit_lower_inv(a_mat, precision, use_pallas)
+
+
+def _wy_w(k, v, g, beta, t, chunk_size, precision):
+    """``Wk = T (beta e^g K)``, ``Wv = T (beta V)`` per chunk (fp32)."""
+    c = chunk_size
+    kc, vc, bc = _chunks(k, c), _chunks(v, c), _chunks(beta, c)
+    rk = kc * (bc * jnp.exp(g))[..., None]
+    rv = vc * bc[..., None]
+    wk = _ein("bhncs,bhnsd->bhncd", t, rk, precision=precision)
+    wv = _ein("bhncs,bhnsd->bhncd", t, rv, precision=precision)
+    return wk, wv
+
+
+def _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision, use_pallas=False):
     """Chunk-local (parallel) quantities of the WY representation.
 
     ``q, k: [B, H, L, Dk]``, ``v: [B, H, L, Dv]``, ``beta: [B, H, L]``,
@@ -261,33 +288,17 @@ def _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision):
     ``P, T: [B, H, N, C, C]`` with ``T = (I + A)^{-1}``.
     """
     c = chunk_size
-    qc, kc, vc, bc = (_chunks(x, c) for x in (q, k, v, beta))
-    m = _causal_decay(g)
-    idx = jnp.arange(c)
-    strict = idx[:, None] > idx[None, :]
-    kk = _ein("bhncd,bhnsd->bhncs", kc, kc, precision=precision)
-    a_mat = jnp.where(strict, bc[..., :, None] * kk * m, 0.0)
-    t = _unit_lower_inv(a_mat, precision)
-    rk = kc * (bc * jnp.exp(g))[..., None]
-    rv = vc * bc[..., None]
-    wk = _ein("bhncs,bhnsd->bhncd", t, rk, precision=precision)
-    wv = _ein("bhncs,bhnsd->bhncd", t, rv, precision=precision)
+    qc, kc = _chunks(q, c), _chunks(k, c)
+    t = _wy_inverse(k, g, beta, c, precision, use_pallas)
+    wk, wv = _wy_w(k, v, g, beta, t, c, precision)
     kd = kc * jnp.exp(g[..., -1:] - g)[..., None]
     qg = qc * jnp.exp(g)[..., None]
-    p = _ein("bhncd,bhnsd->bhncs", qc, kc, precision=precision) * m
+    p = _ein("bhncd,bhnsd->bhncs", qc, kc, precision=precision) * _causal_decay(g)
     return wk, wv, kd, qg, p, t
 
 
 def _chunk_prep(q, k, v, g, beta, chunk_size, precision, use_pallas):
-    if use_pallas:
-        from . import delta_rule_pallas as _dp
-
-        if _dp.prep_supported(chunk_size, q.shape[-1], v.shape[-1]):
-            return _dp.chunk_prep(
-                q, k, v, g.reshape(beta.shape), beta, chunk=chunk_size,
-                precision=precision,
-            )  # fmt: skip
-    return _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision)
+    return _chunk_prep_xla(q, k, v, g, beta, chunk_size, precision, use_pallas)
 
 
 def _chunk_prep_vjp(q, k, v, g, beta, t, cts, chunk_size, precision):
@@ -427,8 +438,28 @@ def _state_pass_bwd(wk, kd, qg, p, a, do, ds_fin, precision, use_pallas):
 # ---- end-to-end chunked op with a hand-written, memory-lean VJP ------------
 
 
-def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
+def _fused_ok(mode, chunk_size, dk, dv, precision):
+    if mode != "fused":
+        return False
+    from . import delta_rule_pallas as _dp
+
+    # fp32 (HIGHEST) dots need more shared memory than a 3090 block has at Dk=128.
+    highest = precision in ("highest", lax.Precision.HIGHEST)
+    return _dp.prep_supported(chunk_size, dk, dv) and not (highest and dk > 64)
+
+
+def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode):
     g = _chunk_gate(log_alpha, chunk_size)
+    if _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision):
+        from . import delta_rule_pallas as _dp
+
+        t = _wy_inverse(k, g, beta, chunk_size, precision, use_pallas=True)
+        ch = functools.partial(_chunk_view, c=chunk_size)
+        o, states, s_fin = _dp.fused_state_pass_fwd(
+            ch(q), ch(k), ch(v), g, ch(beta), t, h0, precision=precision
+        )
+        return o, s_fin, states, g, (t,)
+    use_pallas = mode in ("pallas", "fused")
     prep = _chunk_prep(q, k, v, g, beta, chunk_size, precision, use_pallas)
     wk, wv, kd, qg, p, t = prep
     a = jnp.exp(g[..., -1])
@@ -436,21 +467,23 @@ def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas):
     return o, s_fin, states, g, prep
 
 
+def _chunk_view(x, c):
+    """``[B, H, L, ...] -> [B, H, N, C, ...]`` without changing the dtype."""
+    b, h, seq = x.shape[:3]
+    return x.reshape(b, h, seq // c, c, *x.shape[3:])
+
+
 @functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7, 8, 9))
-def _delta_core(
-    q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas, store_prep
-):
-    o, s_fin, *_ = _forward(
-        q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas
-    )
+def _delta_core(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode, store_prep):
+    o, s_fin, *_ = _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode)
     return o, s_fin
 
 
 def _delta_core_fwd(
-    q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas, store_prep
+    q, k, v, log_alpha, beta, h0, chunk_size, precision, mode, store_prep
 ):
     o, s_fin, states, g, prep = _forward(
-        q, k, v, log_alpha, beta, h0, chunk_size, precision, use_pallas
+        q, k, v, log_alpha, beta, h0, chunk_size, precision, mode
     )
     # Residuals: the inputs plus the L / C chunk-boundary states; the
     # chunk-local WY quantities are recomputed in the backward pass unless
@@ -458,22 +491,37 @@ def _delta_core_fwd(
     return (o, s_fin), (q, k, v, log_alpha, beta, states, prep if store_prep else None)
 
 
-def _delta_core_bwd(chunk_size, precision, use_pallas, store_prep, res, cts):
+def _delta_core_bwd(chunk_size, precision, mode, store_prep, res, cts):
     q, k, v, log_alpha, beta, states, prep = res
     do, ds_fin = cts
     do = jnp.asarray(do, jnp.float32)
     ds_fin = jnp.asarray(ds_fin, jnp.float32)
     g = _chunk_gate(log_alpha, chunk_size)
+    fused = _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision)
+    use_pallas = mode in ("pallas", "fused")
     if prep is None:
         # The barrier stops XLA from CSE-ing this recompute with the forward
         # prep (which would keep every chunk-local intermediate alive).
         qb, kb, vb, gb, bb = lax.optimization_barrier((q, k, v, g, beta))
-        prep = _chunk_prep(qb, kb, vb, gb, bb, chunk_size, precision, use_pallas)
-    wk, wv, kd, qg, p, t = prep
+        if fused:
+            prep = (_wy_inverse(kb, gb, bb, chunk_size, precision, use_pallas=True),)
+        else:
+            prep = _chunk_prep(qb, kb, vb, gb, bb, chunk_size, precision, use_pallas)
     a = jnp.exp(g[..., -1])
-    du, ds_after, ds0 = _state_pass_bwd(
-        wk, kd, qg, p, a, do, ds_fin, precision, use_pallas
-    )
+    if fused:
+        from . import delta_rule_pallas as _dp
+
+        (t,) = prep
+        ch = functools.partial(_chunk_view, c=chunk_size)
+        du, ds_after, ds0 = _dp.fused_state_pass_bwd(
+            ch(q), ch(k), g, ch(beta), t, do, ds_fin, precision=precision
+        )
+        wk, wv = _wy_w(k, v, g, beta, t, chunk_size, precision)
+    else:
+        wk, wv, kd, qg, p, t = prep
+        du, ds_after, ds0 = _state_pass_bwd(
+            wk, kd, qg, p, a, do, ds_fin, precision, use_pallas
+        )
     cts_prep = _state_pass_param_grads(wk, wv, states, do, du, ds_after, precision)
     d_q, d_k, d_v, d_g, d_beta = _chunk_prep_vjp(
         q, k, v, g, beta, t, cts_prep, chunk_size, precision
@@ -498,7 +546,7 @@ def _chunked_impl(
     chunk_size,
     qk_l2norm,
     precision,
-    use_pallas,
+    mode,
     store_prep=False,
 ):
     dtype = q.dtype
@@ -516,7 +564,7 @@ def _chunked_impl(
         log_alpha = jnp.pad(log_alpha, cfg)
         beta = jnp.pad(beta, cfg)
     o, s_fin = _delta_core(
-        q, k, v, log_alpha, beta, h0.astype(jnp.float32), c, precision, use_pallas,
+        q, k, v, log_alpha, beta, h0.astype(jnp.float32), c, precision, mode,
         store_prep,
     )  # fmt: skip
     o = o.reshape(b, h, seq + pad, dv)[:, :, :seq]
@@ -552,7 +600,7 @@ def gated_delta_rule_chunked(
         chunk_size=chunk_size,
         qk_l2norm=qk_l2norm,
         precision=precision,
-        use_pallas=False,
+        mode="xla",
     )
 
 
@@ -567,8 +615,16 @@ def gated_delta_rule_pallas(
     chunk_size: int = 64,
     qk_l2norm: bool = False,
     precision=None,
+    mode: Literal["fused", "pallas"] = "fused",
 ) -> tuple[jax.Array, jax.Array]:
-    """Chunked gated delta rule with Pallas-Triton inter-chunk kernels (GPU)."""
+    """Chunked gated delta rule with Pallas-Triton kernels (GPU).
+
+    ``mode="fused"`` (default): ``(I + A)^{-1}`` by a Pallas block forward
+    substitution and sequential state kernels that rebuild the WY quantities
+    per chunk from ``q, k, v`` (nothing chunk-local is written to HBM in the
+    forward pass). ``mode="pallas"``: WY quantities from XLA, Pallas state
+    kernels only. Shapes the kernels do not support fall back to XLA pieces.
+    """
     return _chunked_impl(
         q,
         k,
@@ -579,7 +635,7 @@ def gated_delta_rule_pallas(
         chunk_size=chunk_size,
         qk_l2norm=qk_l2norm,
         precision=precision,
-        use_pallas=True,
+        mode=mode,
     )
 
 
