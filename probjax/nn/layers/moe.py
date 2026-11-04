@@ -427,7 +427,7 @@ class MoELayer(nnx.Module):
       ``[N * K, H]`` activations, weights read in place); ``"blocked"`` is a
       batched matmul over expert-aligned row blocks that gathers one weight
       copy per block.  Neither ever runs Pallas interpret mode; on CPU
-      ``"chunked"`` is the fastest and smallest from about 1k tokens up (see
+      ``"chunked"`` is the fastest and smallest dropless path from 1k tokens up (see
       ``docs/benchmarks/kernel_gmm_cpu.json``).  ``dropless_dispatch`` only
       affects the Pallas paths, so ``"auto"`` on CPU ignores it.
 
