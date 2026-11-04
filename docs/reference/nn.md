@@ -428,6 +428,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.LowRankLinear
 ::: probjax.nn.LpNorm
 ::: probjax.nn.LpNormClip
+::: probjax.nn.Mamba2Cell
 ::: probjax.nn.MambaCell
 ::: probjax.nn.MaskedLinear
 ::: probjax.nn.MaskedMLP

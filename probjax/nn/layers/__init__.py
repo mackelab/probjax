@@ -49,9 +49,12 @@ from probjax.nn.layers.rattention import (
 from probjax.nn.layers.reg import DropPath
 from probjax.nn.layers.ssm import (
     LRUCell,
+    Mamba2Cell,
     MambaCell,
     RecurrentCell,
     SSDCell,
+    ShortCausalConv,
     mamba_scan,
     ssd,
+    ssd_mixer,
 )

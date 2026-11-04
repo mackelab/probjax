@@ -28,7 +28,7 @@ and the original implementation.
 """
 
 import functools
-from typing import Literal, Optional, Tuple, Union
+from typing import Any, Literal, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -1033,7 +1033,11 @@ def ssd(
     h0: Optional[jax.Array] = None,
     *,
     implementation: Optional[Literal["pallas", "xla"]] = None,
-) -> jax.Array:
+    chunk_size: Optional[int] = None,
+    remat: Literal["full", "states", "none"] = "full",
+    precision: Any = jax.lax.Precision.HIGHEST,
+    return_final_state: bool = False,
+):
     """Differentiable function that computes the output of SSD.
 
     When inputs carry ``NamedSharding`` (e.g. batch/heads-sharded across a
@@ -1060,9 +1064,16 @@ def ssd(
               GPU shapes the Triton kernel does not support (``seq_len % 64``,
               ``dk % 64`` or ``dv % 64`` nonzero).
             * ``"xla"``: always use the chunked pure-JAX implementation.
+        chunk_size, remat, precision: options of the chunked XLA path, see
+            :func:`~probjax.nn.pallas_kernels.kernels.ssd_xla.ssd_chunked`
+            (``chunk_size=None``: 256 on GPU, 128 on CPU). Ignored by the
+            Pallas kernel.
+        return_final_state: also return the final state ``[B, H, dk, dv]``
+            (chunked XLA path only; raises for ``implementation="pallas"``).
 
     Returns:
-        output: [batch_size, num_heads, seq_len, dv]
+        output: [batch_size, num_heads, seq_len, dv], or
+        ``(output, final_state)`` with ``return_final_state=True``.
 
     The notion of groups is similar to the group in multi-group attention (or more preciesly
     multi-value attention) -- one group of q/k corresponds to multiple v heads.
@@ -1077,7 +1088,22 @@ def ssd(
     _, nh, _, dv = v.shape
     backend = jax.default_backend()
     if implementation == "xla" or (implementation is None and backend != "tpu"):
-        return ssd_chunked(q, k, v, log_alpha, h0)
+        return ssd_chunked(
+            q,
+            k,
+            v,
+            log_alpha,
+            h0,
+            chunk_size=chunk_size,
+            remat=remat,
+            precision=precision,
+            return_final_state=return_final_state,
+        )
+    if return_final_state:
+        raise ValueError(
+            "return_final_state=True needs the chunked XLA path; "
+            "use implementation='xla'."
+        )
     if backend == "cpu":
         raise RuntimeError(
             "ssd(implementation='pallas') requires an accelerator backend; "

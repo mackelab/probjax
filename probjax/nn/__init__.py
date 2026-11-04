@@ -189,6 +189,7 @@ from probjax.nn.layers import (
     LowRankLinear,
     LpNorm,
     LpNormClip,
+    Mamba2Cell,
     MambaCell,
     MaskedLinear,
     MoEAux,

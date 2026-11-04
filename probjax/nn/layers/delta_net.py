@@ -10,7 +10,7 @@ import flax.nnx as nnx
 import jax
 import jax.numpy as jnp
 
-from probjax.nn.layers.ssm import RecurrentCell
+from probjax.nn.layers.ssm import RecurrentCell, ShortCausalConv
 from probjax.nn.pallas_kernels.kernels.delta_rule import (
     gated_delta_rule,
     l2_normalize,
@@ -20,29 +20,6 @@ from probjax.nn.utils import filter_precision_kwargs
 from probjax.utils.typing import DTypeLike, PrecisionLike
 
 __all__ = ["GatedDeltaNetCell", "ShortCausalConv"]
-
-
-class ShortCausalConv(nnx.Module):
-    """Depthwise causal 1D convolution over the sequence axis of ``[B, L, C]``."""
-
-    def __init__(self, channels: int, kernel_size: int, rngs: nnx.Rngs):
-        self.kernel_size = int(kernel_size)
-        bound = 1.0 / jnp.sqrt(self.kernel_size)
-        self.kernel = nnx.Param(
-            jax.random.uniform(
-                rngs.params(), (self.kernel_size, channels), minval=-bound, maxval=bound
-            )
-        )
-        self.bias = nnx.Param(jnp.zeros((channels,)))
-
-    def __call__(self, x: jax.Array) -> jax.Array:
-        kernel = self.kernel[...].astype(x.dtype)
-        k = self.kernel_size
-        xp = jnp.pad(x, ((0, 0), (k - 1, 0), (0, 0)))
-        length = x.shape[1]
-        # Short kernels (k ~ 4): a sum of shifted products beats a generic conv.
-        y = sum(xp[:, i : i + length] * kernel[i] for i in range(k))
-        return y + self.bias[...].astype(x.dtype)
 
 
 class GatedDeltaNetCell(RecurrentCell):
