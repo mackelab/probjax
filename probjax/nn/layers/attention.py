@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import math
 from typing import Any, Optional, cast
 
@@ -32,7 +33,8 @@ from probjax.nn.pallas_kernels import (
     SumBias,
     mha,
 )
-from probjax.nn.pallas_kernels.kernels.attention import _aligned_seq_len
+from probjax.nn.pallas_kernels.kernels.attention import _aligned_seq_len, use_splitkv
+from probjax.nn.pallas_kernels.kernels.attention_splitkv import splitkv_attention
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
@@ -1178,7 +1180,9 @@ def _use_fused_gpu_attention(
         return False
     if query.dtype not in (jnp.float32, jnp.bfloat16, jnp.float16):
         return False
-    if query.shape[-2] != key.shape[-2] or key.shape[:-1] != value.shape[:-1]:
+    # GQA/MQA (fewer K/V heads, Flax's ``h // (Hq // Hkv)`` convention) runs
+    # natively in the kernel, without repeating K/V.
+    if query.shape[-2] % key.shape[-2] or key.shape[:-1] != value.shape[:-1]:
         return False
     if query.shape[-1] != key.shape[-1] or query.shape[-1] > 256:
         return False
@@ -1217,6 +1221,10 @@ def dot_product_attention(
     sowing, default precision, at least ``_FUSED_MIN_KV_LEN`` keys -- and the
     Flax einsum otherwise. ``"xla"`` forces the einsum, ``"pallas"`` the kernel.
 
+    Like Flax, ``key``/``value`` may have fewer heads than ``query`` (GQA/MQA,
+    query head ``h`` attends with KV head ``h // (Hq // Hkv)``); the kernel
+    path handles that natively without repeating K/V.
+
     ``sm_scale`` defaults to ``1 / sqrt(head_dim)`` like Flax.
     """
     if implementation not in (None, "xla", "pallas"):
@@ -1249,7 +1257,8 @@ def dot_product_attention(
             dropout_rate=dropout_rate,
             deterministic=deterministic,
             sm_scale=sm_scale,
-            enable_gqa=enable_gqa,
+            # Flax accepts fewer K/V heads without a flag; so does this path.
+            enable_gqa=enable_gqa or query.shape[-2] != key.shape[-2],
         )
         return out.reshape(batch_shape + out.shape[-3:])
 
@@ -1415,7 +1424,18 @@ def flex_attention(
     debug: bool = False,
     dropout_impl: str = "counter",
     diff_mode: str = "reverse",
+    split_kv: bool | None = None,
 ):
+    """Fused softmax attention (Pallas kernels) with mask/bias objects.
+
+    ``key``/``value`` may have fewer heads than ``query`` when
+    ``enable_gqa=True`` (query head ``h`` uses KV head ``h // (Hq // Hkv)``);
+    the kernels index the shared KV head directly, without repeating K/V.
+
+    ``split_kv`` selects the split-KV forward for few queries and long KV
+    sequences (see :func:`probjax.nn.pallas_kernels.kernels.attention.mha`):
+    ``None`` decides by shape, ``False`` disables it.
+    """
     # These can not be used by the pallas backend
     del (
         module,
@@ -1456,17 +1476,11 @@ def flex_attention(
                 f"Expect number of query heads to be a multiple of kv heads for GQA "
                 f"but got Hq={Hq} and Hkv={Hkv}."
             )
-        # Expand K/V over the head groups up front so the kernel only ever sees
-        # equal head counts.  The fused backward stores dK/dV per query head and
-        # does not reduce over a head group, so handing it mismatched heads gives
-        # gradients from a single head only; repeating here lets `repeat`'s VJP
-        # sum the group contributions.  This is the same expansion the low-rank
-        # bias path below applies.
-        if Hq != Hkv:
-            repeats = Hq // Hkv
-            key = jnp.repeat(key, repeats, axis=-2)
-            value = jnp.repeat(value, repeats, axis=-2)
-            enable_gqa = False
+        # K/V keep their Hkv heads: ``mha`` indexes KV head ``h // (Hq // Hkv)``
+        # for query head ``h`` and sums dK/dV over each group, so no
+        # ``jnp.repeat`` copy is made in the forward or kept as a residual.
+        # (Only the low-rank bias path below, which appends per-query-head
+        # factors to K, still expands K/V.)
 
     if sm_scale is None:
         sm_scale = 1.0 / math.sqrt(query.shape[-1])
@@ -1474,6 +1488,38 @@ def flex_attention(
     query = query[None] if query.ndim == 3 else query
     key = key[None] if key.ndim == 3 else key
     value = value[None] if value.ndim == 3 else value
+
+    active_dropout = dropout_rate if not deterministic and dropout_rate > 0 else 0.0
+    if diff_mode == "reverse" and use_splitkv(
+        query,
+        key,
+        mask=mask,
+        bias=bias,
+        dropout_rate=active_dropout,
+        interpret=interpret,
+        grid=grid,
+        split_kv=split_kv,
+    ):
+        # Few queries, long KV: split-KV forward on the unpadded inputs (the
+        # kernel masks the KV tail itself); gradients use the regular path.
+        regular = functools.partial(
+            flex_attention,
+            mask=mask,
+            sm_scale=sm_scale,
+            enable_gqa=True,
+            block_q=block_q,
+            block_k=block_k,
+            block_q_dkv=block_q_dkv,
+            block_kv_dkv=block_kv_dkv,
+            block_q_dq=block_q_dq,
+            block_kv_dq=block_kv_dq,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            debug=debug,
+            split_kv=False,
+        )
+        return splitkv_attention(query, key, value, sm_scale=sm_scale, fallback=regular)
 
     low_rank_biases, bias = _split_low_rank_bias(bias)
     if low_rank_biases:
@@ -1595,6 +1641,7 @@ def flex_attention(
         interpret=interpret,
         debug=debug,
         diff_mode=diff_mode,
+        split_kv=False,  # decided above, before padding
     )
 
     output = cast(Array, output)[:, :l_q, :h, :output_dim]

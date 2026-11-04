@@ -56,6 +56,7 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
+from .attention_splitkv import default_num_splits, splitkv_attention
 from .attention_xla import use_xla_attention, xla_attention
 
 
@@ -1818,6 +1819,23 @@ def _iter_smaller_block_configs(block_sizes: BlockSizes, num_stages: int) -> Any
         yield (cur_bs, cur_st)
 
 
+def _gqa_group(num_heads: int, num_kv_heads: int) -> int:
+    """Query heads per KV head (1 for plain multi-head attention)."""
+    if num_kv_heads <= 0 or num_heads % num_kv_heads:
+        raise ValueError(
+            "GQA needs the number of query heads to be a multiple of the number "
+            f"of key/value heads, got Hq={num_heads} and Hkv={num_kv_heads}."
+        )
+    return num_heads // num_kv_heads
+
+
+def _sum_gqa_group(x: jax.Array, num_kv_heads: int, group: int) -> jax.Array:
+    """Sum per-query-head gradients ``[B, L, Hq, D]`` over each KV head's group."""
+    b, length, _, d = x.shape
+    x = x.reshape(b, length, num_kv_heads, group, d)
+    return jnp.sum(x, axis=3, dtype=jnp.float32).astype(x.dtype)
+
+
 def _mha_impl_raw(
     q: jax.Array,
     k: jax.Array,
@@ -1852,6 +1870,8 @@ def _mha_impl_raw(
     """
     batch_size, q_seq_len, num_heads, head_dim = q.shape
     kv_seq_len = k.shape[1]
+    # GQA/MQA: query head h reads KV head h // group (the jnp.repeat layout).
+    group = _gqa_group(num_heads, k.shape[2])
     block_q = min(block_sizes.block_q, q_seq_len)
     block_k = min(block_sizes.block_k, kv_seq_len)
     block_d = pl.next_power_of_2(head_dim)
@@ -1875,8 +1895,14 @@ def _mha_impl_raw(
 
     in_specs: list[pl.BlockSpec | None] = [
         pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
     ]
 
     in_specs.append(b_spec if b_data is not None else None)
@@ -1998,6 +2024,8 @@ def _mha_impl_jvp_from_lse_raw(
     """
     batch_size, q_seq_len, num_heads, head_dim = q.shape
     kv_seq_len = k.shape[1]
+    # GQA/MQA: query head h reads KV head h // group (the jnp.repeat layout).
+    group = _gqa_group(num_heads, k.shape[2])
     block_q = min(block_sizes.block_q, q_seq_len)
     block_k = min(block_sizes.block_k, kv_seq_len)
     block_d = pl.next_power_of_2(head_dim)
@@ -2022,11 +2050,23 @@ def _mha_impl_jvp_from_lse_raw(
 
     in_specs: list[pl.BlockSpec | None] = [
         pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
         pl.BlockSpec((None, block_q, None, block_d), lambda i, j, k_: (j, i, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
-        pl.BlockSpec((None, kv_seq_len, None, block_d), lambda _, j, k_: (j, 0, k_, 0)),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
+        pl.BlockSpec(
+            (None, kv_seq_len, None, block_d),
+            lambda _, j, k_: (j, 0, k_ // group, 0),
+        ),
     ]
 
     in_specs.append(b_spec if b_data is not None else None)
@@ -2203,6 +2243,37 @@ _MHA_BWD_SPEC = KernelSpec(
 )
 
 
+# GQA/MQA variants: K/V carry their own head factor, so the KV head count may
+# differ from the query head count. Heads are not shardable here -- the
+# kernel's ``h // group`` indexing needs both head axes split consistently,
+# which independent factors cannot guarantee -- so they stay replicated.
+_KV_DIMS_GQA = ("batch", "kv_seq", "kv_heads", "head_dim")
+_GQA_SHARDABLE = frozenset({"batch"})
+
+
+def _gqa_spec(spec: KernelSpec, name: str) -> KernelSpec:
+    def kv_dims(dims):
+        return _KV_DIMS_GQA if dims == _KV_DIMS else dims
+
+    return KernelSpec(
+        name=name,
+        operands=tuple(
+            Operand(op.name, kv_dims(op.dims), optional=op.optional)
+            for op in spec.operands
+        ),
+        outputs=tuple(
+            Output(kv_dims(out.dims), dtype_like=out.dtype_like) for out in spec.outputs
+        ),
+        shardable=_GQA_SHARDABLE,
+    )
+
+
+_MHA_FWD_GQA_SPEC = _gqa_spec(_MHA_FWD_SPEC, "mha_fwd_gqa")
+_MHA_FWD_RES_GQA_SPEC = _gqa_spec(_MHA_FWD_RES_SPEC, "mha_fwd_res_gqa")
+_MHA_JVP_GQA_SPEC = _gqa_spec(_MHA_JVP_SPEC, "mha_jvp_gqa")
+_MHA_BWD_GQA_SPEC = _gqa_spec(_MHA_BWD_SPEC, "mha_bwd_gqa")
+
+
 def _mha_fwd_prim_impl(*args, **static):
     return _mha_impl_raw(*args, output_activations=False, **static)
 
@@ -2228,6 +2299,19 @@ mha_fwd_p = make_kernel_primitive(_MHA_FWD_SPEC, impl=_mha_fwd_prim_impl)
 mha_fwd_res_p = make_kernel_primitive(_MHA_FWD_RES_SPEC, impl=_mha_fwd_res_prim_impl)
 mha_jvp_p = make_kernel_primitive(_MHA_JVP_SPEC, impl=_mha_jvp_prim_impl)
 mha_bwd_p = make_kernel_primitive(_MHA_BWD_SPEC, impl=_mha_bwd_prim_impl)
+mha_fwd_gqa_p = make_kernel_primitive(_MHA_FWD_GQA_SPEC, impl=_mha_fwd_prim_impl)
+mha_fwd_res_gqa_p = make_kernel_primitive(
+    _MHA_FWD_RES_GQA_SPEC, impl=_mha_fwd_res_prim_impl
+)
+mha_jvp_gqa_p = make_kernel_primitive(_MHA_JVP_GQA_SPEC, impl=_mha_jvp_prim_impl)
+mha_bwd_gqa_p = make_kernel_primitive(_MHA_BWD_GQA_SPEC, impl=_mha_bwd_prim_impl)
+
+
+def _mha_prims(q, k):
+    """(fwd, fwd_res, jvp, bwd) primitives for these head counts."""
+    if q.shape[-2] == k.shape[-2]:
+        return mha_fwd_p, mha_fwd_res_p, mha_jvp_p, mha_bwd_p
+    return mha_fwd_gqa_p, mha_fwd_res_gqa_p, mha_jvp_gqa_p, mha_bwd_gqa_p
 
 
 def _aligned_seq_len(seq_len: int, *blocks: int) -> int:
@@ -2267,6 +2351,54 @@ def _check_paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len) -> No
         )
 
 
+# Split-KV forward ("flash-decoding") dispatch. The regular forward runs one
+# program per (batch, head, query tile); with few queries that underfills the
+# GPU while each program walks the whole KV sequence. Thresholds measured on an
+# RTX 3090 (docs/benchmarks/kernel_attn_ext_gpu.json, suite ``splitsweep``).
+_SPLITKV_MAX_Q_LEN = 64
+_SPLITKV_MIN_KV_LEN = 1024
+
+
+def use_splitkv(
+    q,
+    k,
+    *,
+    mask=None,
+    bias=None,
+    dropout_rate: float = 0.0,
+    interpret: bool = False,
+    grid=None,
+    split_kv: bool | None = None,
+) -> bool:
+    """Whether :func:`mha` runs the split-KV forward for these inputs.
+
+    Only exact cases: no mask/bias/dropout, GPU (not interpret mode), default
+    grid. ``split_kv=False`` disables it; ``None`` decides by shape;
+    ``True`` forces it whenever it is exact.
+    """
+    if split_kv is False or interpret or grid is not None:
+        return False
+    if mask is not None and not isinstance(mask, NoMask):
+        return False
+    if bias is not None or dropout_rate > 0:
+        return False
+    if q.ndim != 4 or k.ndim != 4 or use_xla_attention(q, interpret):
+        return False
+    if q.dtype not in (jnp.float32, jnp.bfloat16, jnp.float16):
+        return False
+    if _query_triton_smem_limit() is None:
+        return False
+    if split_kv:
+        return True
+    batch, q_len, num_heads, _ = q.shape
+    kv_len, num_kv_heads = k.shape[1], k.shape[2]
+    if q_len > _SPLITKV_MAX_Q_LEN or kv_len < _SPLITKV_MIN_KV_LEN:
+        return False
+    rows = (num_heads // num_kv_heads) * q_len
+    row_blocks = ceil_div(rows, 64)
+    return default_num_splits(batch, num_kv_heads, row_blocks, kv_len, 64) > 1
+
+
 def mha(
     q,
     k,
@@ -2285,8 +2417,21 @@ def mha(
     dropout_rate: float = 0.0,
     dropout_impl: str = "counter",
     diff_mode: str = "reverse",
+    split_kv: bool | None = None,
 ):
     """Multi-Head Attention public API.
+
+    ``k``/``v`` may have fewer heads than ``q`` (GQA/MQA): query head ``h``
+    uses KV head ``h // (Hq // Hkv)`` -- the ``jnp.repeat`` convention -- read
+    directly by the kernels (no repeated K/V copy); dK/dV are summed over each
+    group.
+
+    ``split_kv``: with few queries and a long KV sequence (decoding), the
+    forward partitions the KV sequence over extra programs and combines the
+    partial results by log-sum-exp (see ``attention_splitkv``). ``None``
+    (default) picks it by shape when exact (no mask/bias/dropout), ``False``
+    never, ``True`` whenever exact. Differentiation always uses the regular
+    kernels.
 
     Reverse-mode differentiation uses a lightweight ``custom_vjp`` wrapper
     around the raw Pallas forward/backward kernels.  When a multi-device mesh
@@ -2301,6 +2446,14 @@ def mha(
     if diff_mode not in ("reverse", "forward"):
         raise ValueError(
             f"diff_mode must be 'reverse' or 'forward', got {diff_mode!r}."
+        )
+    # GQA/MQA: K/V may have fewer heads than Q (query head h uses KV head
+    # h // (Hq // Hkv)); validated here, handled natively by the kernels.
+    _gqa_group(q.shape[-2], k.shape[-2])
+    if v.shape[-2] != k.shape[-2]:
+        raise ValueError(
+            f"key and value need the same number of heads, got {k.shape[-2]} "
+            f"and {v.shape[-2]}."
         )
 
     # CPU: the Triton kernels only run in (very slow) Pallas interpret mode
@@ -2318,6 +2471,33 @@ def mha(
             dropout_impl=dropout_impl,
             diff_mode=diff_mode,
         )
+
+    if (
+        diff_mode == "reverse"
+        and use_splitkv(
+            q,
+            k,
+            mask=mask,
+            bias=bias,
+            dropout_rate=dropout_rate,
+            interpret=interpret,
+            grid=grid,
+            split_kv=split_kv,
+        )
+        and not _is_direct_jvp_trace(q, k, v)
+    ):
+        regular = functools.partial(
+            mha,
+            mask=mask,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            debug=debug,
+            split_kv=False,
+        )
+        return splitkv_attention(q, k, v, sm_scale=sm_scale, fallback=regular)
 
     # The kernels tile Q and KV with power-of-two blocks and do not mask a
     # partial last tile, so unaligned sequence lengths would read past the end
@@ -2358,6 +2538,7 @@ def mha(
             dropout_rate=dropout_rate,
             dropout_impl=dropout_impl,
             diff_mode=diff_mode,
+            split_kv=False,
         )
         return lax.slice_in_dim(out, 0, q_len, axis=out.ndim - 3)
 
@@ -2572,9 +2753,9 @@ def _make_mha_runners(
         )
         operands = {"q": q, "k": k, "v": v, "rng_seed": rng_seed, **arrays}
         if output_activations:
-            out, lse = shardable_kernel(mha_fwd_res_p, operands, **static)
+            out, lse = shardable_kernel(_mha_prims(q, k)[1], operands, **static)
             return out, rng_val, rng_seed, lse
-        return shardable_kernel(mha_fwd_p, operands, **static)
+        return shardable_kernel(_mha_prims(q, k)[0], operands, **static)
 
     def _run_backward(
         do,
@@ -2618,7 +2799,7 @@ def _make_mha_runners(
         )
 
         return shardable_kernel(
-            mha_bwd_p,
+            _mha_prims(q, k)[3],
             {
                 "do": do,
                 "q": q,
@@ -2860,7 +3041,7 @@ def _make_mha_forward_jvp(
         bias_fn_grad = bias.grad if (bias is not None) else None
 
         tangent_out = shardable_kernel(
-            mha_jvp_p,
+            _mha_prims(q, k)[2],
             {
                 "q": q,
                 "k": k,
@@ -3035,6 +3216,11 @@ def _mha_backward_raw(
     """
     batch_size, q_seq_len, num_heads, head_dim = q.shape
     kv_seq_len = k.shape[1]
+    num_kv_heads = k.shape[2]
+    group = _gqa_group(num_heads, num_kv_heads)
+    # GQA: the kernels write dK/dV per *query* head (shape [B, Lkv, Hq, D]);
+    # the group's contributions are summed below.
+    dkv_shape = (batch_size, kv_seq_len, num_heads, k.shape[3])
     block_d = pl.next_power_of_2(head_dim)
     block_q = min(block_sizes.block_q, q_seq_len)
     _block_k = min(block_sizes.block_k, kv_seq_len)
@@ -3083,8 +3269,8 @@ def _mha_backward_raw(
 
         out_shapes = [
             jax.ShapeDtypeStruct(q.shape, q.dtype),
-            jax.ShapeDtypeStruct(k.shape, k.dtype),
-            jax.ShapeDtypeStruct(v.shape, v.dtype),
+            jax.ShapeDtypeStruct(dkv_shape, k.dtype),
+            jax.ShapeDtypeStruct(dkv_shape, v.dtype),
         ]
 
         in_specs = [
@@ -3093,10 +3279,12 @@ def _mha_backward_raw(
                 (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
             ),
             # data_q, data_k
             q_data_spec if q_data is not None else None,
@@ -3220,10 +3408,12 @@ def _mha_backward_raw(
                 (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
             ),
             pl.BlockSpec(
-                (None, kv_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
             ),
             # mask data
             q_data_spec if q_data is not None else None,
@@ -3275,8 +3465,8 @@ def _mha_backward_raw(
                 head_dim=head_dim,
             ),
             out_shape=[
-                jax.ShapeDtypeStruct(k.shape, k.dtype),
-                jax.ShapeDtypeStruct(v.shape, v.dtype),
+                jax.ShapeDtypeStruct(dkv_shape, k.dtype),
+                jax.ShapeDtypeStruct(dkv_shape, v.dtype),
             ],
             in_specs=dkdv_in_specs,
             grid=(batch_size, num_heads, pl.cdiv(kv_seq_len, block_kv_dkv)),
@@ -3366,4 +3556,7 @@ def _mha_backward_raw(
             q_index_offset_size,
         )
 
+    if group > 1:
+        dk = _sum_gqa_group(dk, num_kv_heads, group)
+        dv = _sum_gqa_group(dv, num_kv_heads, group)
     return dq.astype(q.dtype), dk, dv
