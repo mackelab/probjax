@@ -1617,12 +1617,14 @@ _ONEPASS_BACKWARD_IMPLS = ("triton_onepass", "onepass")
 # on an RTX 3090 for configurations that beat the two-pass default at every
 # measured batch x heads (32, 64, 128) and length in range; the atomic dQ
 # traffic grows with the grid, so wins at small B*H do not carry over to
-# large ones. fp32 d128 is not listed: its single-pass backward wins only
+# large ones; below 1024 keys bf16 d32 was neutral to 3% slower (and an
+# 11% slower DiffusionTransformer step at 256 tokens), hence its bound.
+# fp32 d128 is not listed: its single-pass backward wins only
 # for small B*H (0.87-0.98x) and loses for B*H >= 64 (up to 1.10x).
 _SMALL_SMEM_ONEPASS_TUNED: dict[
     tuple[int, int], tuple[int, int, int, int, int | None, int | None]
 ] = {
-    (2, 32): (64, 128, 1, 4, None, None),
+    (2, 32): (64, 128, 1, 4, 1024, None),
     (2, 64): (32, 128, 1, 8, 2048, None),
     (2, 128): (64, 64, 2, 8, 2048, None),
     (4, 32): (64, 64, 1, 4, None, None),
