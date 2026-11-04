@@ -1738,6 +1738,110 @@ def _estimate_onepass_bwd_smem_bytes(
     return (2 * (bq_dkv + bkv_dkv) + bkv_dkv) * bd * dtype_bytes + scores
 
 
+def _estimate_fwd_smem_bytes_multibuffered(
+    bq: int, bk: int, bd: int, stages: int, dtype_bytes: int
+) -> int:
+    """Forward footprint when Triton multi-buffers K and V per pipeline stage.
+
+    On sm_90 (H100) the resident Q tile plus ``stages`` copies of each K and V
+    tile reproduces the measured request exactly (bf16 d256 128x128, 2 stages:
+    327680 bytes), which ``_estimate_fwd_smem_bytes`` under-estimates.
+    """
+    return (bq * bd + 2 * max(stages, 1) * bk * bd) * dtype_bytes
+
+
+def _estimate_onepass_bwd_smem_bytes_multibuffered(
+    bq_dkv: int, bkv_dkv: int, bd: int, dtype_bytes: int, stages: int
+) -> int:
+    """Single-pass backward footprint with per-stage buffering of Q and dO.
+
+    sm_90 measurement: fp32 d128 64x64, 2 stages requested 262144 bytes =
+    (4 resident [block_kv, D] tiles + 2 * stages streamed [block_q, D] tiles)
+    * 4 bytes; the sm_86 estimate gives 163840.
+    """
+    scores = bq_dkv * bkv_dkv * dtype_bytes if dtype_bytes < 4 else 0
+    return (4 * bkv_dkv + 2 * max(stages, 1) * bq_dkv) * bd * dtype_bytes + scores
+
+
+def _fit_large_smem_config(
+    block_sizes: BlockSizes,
+    num_stages: int,
+    *,
+    limit: int,
+    head_dim: int,
+    dtype_bytes: int,
+    backward_pass_impl: str,
+) -> tuple[BlockSizes, int]:
+    """Shrink-only fit for large-SMEM (datacenter) GPUs.
+
+    Requested / default tiles are kept whenever they fit; only configurations
+    whose estimated footprint (the larger of the sm_86 and the multi-buffered
+    estimate) exceeds the limit are shrunk.  On H100 the defaults overflowed
+    for head_dim 256 (forward) and for the fp32 head_dim 128 single-pass
+    backward, which failed to compile with RESOURCE_EXHAUSTED.
+    """
+    budget = limit - _SMEM_RESERVE
+    bd = _next_pow2(head_dim)
+    bq, bk, stages = block_sizes.block_q, block_sizes.block_k, num_stages
+    while (
+        max(
+            _estimate_fwd_smem_bytes(bq, bk, bd, stages, dtype_bytes),
+            _estimate_fwd_smem_bytes_multibuffered(bq, bk, bd, stages, dtype_bytes),
+        )
+        > budget
+    ):
+        nxt = _shrink_fwd_config(bq, bk, stages)
+        if nxt is None:
+            break
+        bq, bk, stages = nxt
+    bwd_stages = (
+        block_sizes.num_stages_bwd if block_sizes.num_stages_bwd is not None else num_stages
+    )
+    tiles = (
+        block_sizes.block_q_dkv,
+        block_sizes.block_kv_dkv,
+        block_sizes.block_q_dq,
+        block_sizes.block_kv_dq,
+    )
+    if backward_pass_impl in _ONEPASS_BACKWARD_IMPLS:
+
+        def bwd_est(t, st):
+            return max(
+                _estimate_onepass_bwd_smem_bytes(t[0], t[1], bd, dtype_bytes),
+                _estimate_onepass_bwd_smem_bytes_multibuffered(
+                    t[0], t[1], bd, dtype_bytes, st
+                ),
+            )
+    else:
+
+        def bwd_est(t, st):
+            return _estimate_bwd_smem_bytes(*t, bd, dtype_bytes)
+
+    cur = (*tiles, bwd_stages)
+    while bwd_est(cur[:4], cur[4]) > budget:
+        nxt = _shrink_all_backward_blocks(*cur)
+        if nxt is None:
+            break
+        cur = nxt
+    if (bq, bk, stages, cur) == (
+        block_sizes.block_q, block_sizes.block_k, num_stages, (*tiles, bwd_stages)
+    ):
+        return block_sizes, num_stages
+    return (
+        dataclasses.replace(
+            block_sizes,
+            block_q=bq,
+            block_k=bk,
+            block_q_dkv=cur[0],
+            block_kv_dkv=cur[1],
+            block_q_dq=cur[2],
+            block_kv_dq=cur[3],
+            num_stages_bwd=cur[4],
+        ),
+        stages,
+    )
+
+
 def _shrink_fwd_config(bq: int, bk: int, stages: int) -> tuple[int, int, int] | None:
     """One shrink step: prefer dropping pipelining, then halving tiles."""
     if stages > 1:
@@ -2766,10 +2870,24 @@ def mha(
         _smem_limit = None if interpret else _query_triton_smem_limit()
     except Exception:
         _smem_limit = None
-    if interpret or _smem_limit is None or _smem_limit >= _DATACENTER_SMEM_THRESHOLD:
+    if interpret or _smem_limit is None:
         return _build_inner(block_sizes, num_stages)(
             q, k, v, rng, mask_leaves, bias_leaves
         )
+    if _smem_limit >= _DATACENTER_SMEM_THRESHOLD:
+        # Datacenter GPUs keep the requested tiles unless they cannot fit.
+        try:
+            fit_bs, fit_st = _fit_large_smem_config(
+                block_sizes,
+                num_stages,
+                limit=_smem_limit,
+                head_dim=int(q.shape[-1]),
+                dtype_bytes=int(jnp.dtype(q.dtype).itemsize),
+                backward_pass_impl=backward_pass_impl,
+            )
+        except Exception:
+            fit_bs, fit_st = block_sizes, num_stages
+        return _build_inner(fit_bs, fit_st)(q, k, v, rng, mask_leaves, bias_leaves)
 
     def _maybe_proactive() -> tuple[BlockSizes, int]:
         try:
