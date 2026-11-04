@@ -56,7 +56,7 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
-from .attention_splitkv import default_num_splits, splitkv_attention
+from .attention_splitkv import splitkv_attention
 from .attention_xla import use_xla_attention, xla_attention
 
 
@@ -2390,13 +2390,12 @@ def use_splitkv(
         return False
     if split_kv:
         return True
-    batch, q_len, num_heads, _ = q.shape
-    kv_len, num_kv_heads = k.shape[1], k.shape[2]
-    if q_len > _SPLITKV_MAX_Q_LEN or kv_len < _SPLITKV_MIN_KV_LEN:
-        return False
-    rows = (num_heads // num_kv_heads) * q_len
-    row_blocks = ceil_div(rows, 64)
-    return default_num_splits(batch, num_kv_heads, row_blocks, kv_len, 64) > 1
+    q_len, kv_len = q.shape[1], k.shape[1]
+    # Measured: split-KV (>= 2 splits) is faster than or equal to the regular
+    # forward for every Lq <= 64, Lkv >= 1024 case swept (B in {1, 8},
+    # Hkv in {8, 32}); 1.1-1.4x when the grid is already full (B=8, MHA), up
+    # to ~6x for single-sequence GQA decoding.
+    return q_len <= _SPLITKV_MAX_Q_LEN and kv_len >= _SPLITKV_MIN_KV_LEN
 
 
 def mha(

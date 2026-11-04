@@ -108,11 +108,12 @@ def default_num_splits(
 ) -> int:
     """Splits so that ``B * Hkv * row_blocks * splits`` fills the GPU.
 
-    Each split keeps at least ``_MIN_SPLIT_LEN`` keys so the per-split loop
-    amortises the combine.
+    At least two splits whenever every split keeps ``_MIN_SPLIT_LEN`` keys
+    (two were never slower than the regular forward in the RTX 3090 sweep, even
+    when the grid was already full), and no more than that length allows.
     """
     programs = batch * num_kv_heads * row_blocks
-    want = max(1, math.ceil(_TARGET_PROGRAMS / programs))
+    want = max(2, math.ceil(_TARGET_PROGRAMS / programs))
     most = max(1, kv_len // max(_MIN_SPLIT_LEN, block_k))
     return int(min(want, most))
 
@@ -140,7 +141,7 @@ def splitkv_forward(
     *,
     sm_scale: float,
     num_splits: int | None = None,
-    block_k: int = 64,
+    block_k: int | None = None,
     num_warps: int = 4,
     num_stages: int = 2,
     interpret: bool = False,
@@ -161,6 +162,10 @@ def splitkv_forward(
     block_r = max(16, pl.next_power_of_2(min(rows, 64)))
     row_blocks = pl.cdiv(rows, block_r)
     rows_pad = row_blocks * block_r
+    if block_k is None:
+        # Single 16-row tile (MHA / few packed rows): purely bandwidth bound,
+        # 32-key tiles are ~11% faster than 64 (RTX 3090, Lkv=64k, bf16).
+        block_k = 32 if block_r == 16 else 64
     block_k = min(block_k, max(16, pl.next_power_of_2(lkv)))
     block_d = pl.next_power_of_2(d)
     block_dv = pl.next_power_of_2(dv)
