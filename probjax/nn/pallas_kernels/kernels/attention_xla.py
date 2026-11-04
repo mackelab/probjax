@@ -22,17 +22,20 @@ too slow.  This module provides an XLA implementation with the same semantics:
   ``h`` uses KV head ``h // (Hq // Hkv)``, i.e. the ``jnp.repeat`` convention)
   without materialising repeated K/V.
 
-Two strategies, picked by shape (see :func:`_use_dense`):
+Two strategies, picked by shape (see :func:`_auto_strategy`):
 
 * **dense** for small problems: full ``[B, H, Q, K]`` scores, plain JAX
   autodiff in both modes;
-* **chunked** for large ones: online softmax over KV chunks (``lax.scan``), so
-  the working set is ``O(B * H * Q * chunk)``.  Reverse mode uses a
-  ``custom_vjp`` whose backward *recomputes* the probabilities per KV chunk from
-  the saved log-sum-exp (flash-attention-2 style) instead of storing them;
-  the residuals are only ``q, k, v, out, lse``.  Forward mode (``jax.jvp``)
-  differentiates the plain chunked forward, which keeps the same bounded
-  working set.
+* **tiled** for larger ones: online softmax over ``block_q x block_k`` tiles
+  (``lax.map`` over query blocks, ``lax.scan`` over KV blocks, tiles that the
+  mask's static ``block_mask`` rules out are skipped with ``lax.cond``), so the
+  working set is ``O(B * H * block_q * block_k)``.  Reverse mode uses a
+  ``custom_vjp`` whose backward *recomputes* the probabilities per tile from
+  the saved log-sum-exp (flash-attention-2 style) instead of storing them; the
+  residuals are only ``q, k, v, out, lse``.  Forward mode (``jax.jvp``)
+  differentiates the tiled forward directly, with the same bounded working
+  set.  Mid-sized problems use a single tile (no loop), which is the fastest
+  option there because of the cheaper backward.
 """
 
 from __future__ import annotations
@@ -50,11 +53,15 @@ from ..kernel_utils import get_dropout_mask
 
 __all__ = ["xla_attention", "use_xla_attention"]
 
-# Problems with at most this many score elements (B * Hq * Q * K) use the dense
-# strategy; larger ones are tiled.  From CPU timings (docs/scripts/
-# benchmark_kernel_attn-cpu.py, 24-core x86): dense and tiled tie at
-# B*H=8, T=512 (2**21 scores) and tiled wins from T=1024 on, fwd and fwd+bwd.
-DENSE_MAX_SCORES = 2**21
+# Strategy thresholds, on the per-head score count Q * K.  From CPU timings
+# (docs/scripts/benchmark_kernel_attn-cpu.py, 24-core x86, B*H = 8, D = 64):
+# * up to 256 x 256 the dense strategy is as fast as anything else;
+# * up to 512 x 512 a single tile (flash-style custom_vjp backward over one
+#   tile) beats dense by ~2x in fwd+bwd and 256x256 tiles by ~1.5x;
+# * beyond that 256 x 256 tiles win (and skip fully masked tiles, ~2x for
+#   causal), and keep the working set bounded.
+DENSE_MAX_SCORES = 256 * 256
+SINGLE_TILE_MAX_SCORES = 512 * 512
 # Tile of the tiled strategy (query rows x KV columns).  256x256 was best or
 # within noise of the best of {Q x 256, 512x256, 256x256, 512x128, 1024x512}
 # for T in {1024, 2048}, causal and not, fwd and fwd+bwd.
@@ -576,8 +583,13 @@ def _make_tiled_vjp(
     return fn
 
 
-def _use_dense(batch: int, hq: int, q_len: int, kv_len: int) -> bool:
-    return batch * hq * q_len * kv_len <= DENSE_MAX_SCORES
+def _auto_strategy(q_len: int, kv_len: int):
+    """``(strategy, block_q, block_k)`` for the ``"auto"`` strategy."""
+    if q_len * kv_len <= DENSE_MAX_SCORES:
+        return "dense", None, None
+    if q_len * kv_len <= SINGLE_TILE_MAX_SCORES:
+        return "tiled", q_len, kv_len
+    return "tiled", DEFAULT_BLOCK_Q, DEFAULT_BLOCK_K
 
 
 def _balanced_block(length: int, target: int) -> int:
@@ -639,7 +651,8 @@ def xla_attention(
         )
 
     if strategy == "auto":
-        strategy = "dense" if _use_dense(batch, hq, q_len, kv_len) else "tiled"
+        strategy, auto_bq, auto_bk = _auto_strategy(q_len, kv_len)
+        block_q, block_k = block_q or auto_bq, block_k or auto_bk
     if strategy == "dense":
         bq, kc = q_len, kv_len
     elif strategy == "tiled":
