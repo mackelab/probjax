@@ -1613,17 +1613,21 @@ _DEFAULT_BLOCK_SIZES = (128, 128, 64, 64, 64, 64)
 _ONEPASS_BACKWARD_IMPLS = ("triton_onepass", "onepass")
 # Single-pass backward defaults on small-SMEM GPUs, keyed by (dtype bytes,
 # padded head_dim): (block_q_dkv, block_kv_dkv, num_stages_bwd,
-# num_warps_bwd, max_kv_len or None). Measured on an RTX 3090 (B=4, H=8,
-# T=512..8192, causal and not): fwd+bwd 0.80-0.95x of the two-pass default
-# for bf16 d64, 0.87-0.97x bf16 d128, 0.82-0.99x fp32 d64, 0.83-0.96x fp32
-# d128 up to 4096 keys (1.06-1.12x at 8192, hence the cap).
+# num_warps_bwd, min_kv_len, max_kv_len); ``None`` bounds are open. Measured
+# on an RTX 3090 (B=4, H=8, causal and not), fwd+bwd relative to the
+# two-pass default: bf16 d32 0.80-0.94x from 1024 keys (1.01-1.03x at 256,
+# hence the lower bound), bf16 d64 0.80-0.95x, bf16 d128 0.87-0.97x, fp32 d32
+# 0.79-0.99x, fp32 d64 0.82-0.99x, fp32 d128 0.83-0.96x up to 4096 keys
+# (1.06-1.12x at 8192, hence the cap).
 _SMALL_SMEM_ONEPASS_TUNED: dict[
-    tuple[int, int], tuple[int, int, int, int, int | None]
+    tuple[int, int], tuple[int, int, int, int, int | None, int | None]
 ] = {
-    (2, 64): (64, 64, 1, 4, None),
-    (2, 128): (64, 64, 2, 8, None),
-    (4, 64): (16, 32, 1, 4, None),
-    (4, 128): (32, 32, 1, 4, 4096),
+    (2, 32): (64, 64, 1, 4, 512, None),
+    (2, 64): (64, 64, 1, 4, None, None),
+    (2, 128): (64, 64, 2, 8, None, None),
+    (4, 32): (64, 64, 1, 4, None, None),
+    (4, 64): (16, 32, 1, 4, None, None),
+    (4, 128): (32, 32, 1, 4, None, 4096),
 }
 _DEFAULT_NUM_STAGES = 2
 
@@ -1871,9 +1875,11 @@ def _small_smem_onepass_config(
     tuned = _SMALL_SMEM_ONEPASS_TUNED.get((dtype_bytes, _next_pow2(head_dim)))
     if tuned is None:
         return block_sizes, backward_pass_impl
-    bq, bkv, stages, warps, max_kv = tuned
+    bq, bkv, stages, warps, min_kv, max_kv = tuned
     if not explicit:
         if max_kv is not None and kv_seq_len > max_kv:
+            return block_sizes, backward_pass_impl
+        if min_kv is not None and kv_seq_len < min_kv:
             return block_sizes, backward_pass_impl
         if BlockSizes._should_use_split_backward(q_seq_len, kv_seq_len, bq, bkv):
             return block_sizes, backward_pass_impl

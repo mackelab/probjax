@@ -124,7 +124,7 @@ def _requires_gpu():
 
 
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
-@pytest.mark.parametrize("d", [64, 128])
+@pytest.mark.parametrize("d", [32, 64, 128])
 @pytest.mark.parametrize("causal", [False, True])
 def test_gpu_onepass_matches_split(dtype, d, causal):
     _requires_gpu()
