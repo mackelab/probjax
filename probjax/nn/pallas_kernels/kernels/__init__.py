@@ -1,4 +1,10 @@
 from .attention import BlockSizes, mha
+from .delta_rule import (
+    gated_delta_rule,
+    gated_delta_rule_chunked,
+    gated_delta_rule_pallas,
+    gated_delta_rule_recurrent,
+)
 from .flash_attention3 import (
     TuningConfig,
     attention,
@@ -37,6 +43,10 @@ __all__ = [
     "attention",
     "attention_with_pipeline_emitter",
     "compute_mamba_scan",
+    "gated_delta_rule",
+    "gated_delta_rule_chunked",
+    "gated_delta_rule_pallas",
+    "gated_delta_rule_recurrent",
     "kde_density",
     "kernel_logsumexp",
     "kernel_logsumexp_dense",

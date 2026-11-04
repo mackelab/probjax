@@ -209,6 +209,7 @@ from probjax.nn.layers import (
     SpatialSelfAttention,
     load_balance_loss,
 )
+from probjax.nn.layers.delta_net import GatedDeltaNetCell
 from probjax.nn.losses import (
     build_denoising_loss,
     build_denoising_score_matching_loss,
