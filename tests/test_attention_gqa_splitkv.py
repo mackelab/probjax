@@ -241,6 +241,29 @@ def test_cpu_decode_shapes(lq, lkv):
     _assert_close_all(got, want, tol)
 
 
+def test_cpu_flex_does_not_pad_decode_queries():
+    """On CPU the XLA path takes any length: no 16-row query padding."""
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU dispatch")
+    q, k, v, _ = _inputs(1, 1, 100, 4, 2, 24)
+    jaxpr = jax.make_jaxpr(lambda q, k, v: flex_attention(q, k, v, enable_gqa=True))(
+        q, k, v
+    )
+
+    def shapes(jaxpr):
+        for eqn in jaxpr.eqns:
+            for out in eqn.outvars:
+                yield tuple(getattr(out.aval, "shape", ()))
+            for param in eqn.params.values():
+                inner = getattr(param, "jaxpr", None)
+                if inner is not None and hasattr(inner, "eqns"):
+                    yield from shapes(inner)
+
+    seen = set(shapes(jaxpr.jaxpr))
+    # Padded query rows (1 -> 16) or head dim (24 -> 32) would show up here.
+    assert not any(len(s) == 4 and (s[1] == 16 or s[-1] == 32) for s in seen), seen
+
+
 # ---------------------------------------------------------------------------
 # GPU-only
 # ---------------------------------------------------------------------------

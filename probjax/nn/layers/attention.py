@@ -35,6 +35,7 @@ from probjax.nn.pallas_kernels import (
 )
 from probjax.nn.pallas_kernels.kernels.attention import _aligned_seq_len, use_splitkv
 from probjax.nn.pallas_kernels.kernels.attention_splitkv import splitkv_attention
+from probjax.nn.pallas_kernels.kernels.attention_xla import use_xla_attention
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
@@ -1577,9 +1578,14 @@ def flex_attention(
         block_kv_dq,
         backward_pass_impl,
     )
-    query = _pad_axes(query, {-3: q_pad, -1: _pow2_dim(query.shape[-1])})
-    key = _pad_axes(key, {-3: kv_pad, -1: _pow2_dim(key.shape[-1])})
-    value = _pad_axes(value, {-3: kv_pad, -1: _pow2_dim(value.shape[-1])})
+    if use_xla_attention(query, interpret):
+        # CPU: mha runs its XLA path, which takes any lengths and head dims;
+        # padding would only add work (16x for a single decode query).
+        q_pad, kv_pad = l_q, l_kv
+    else:
+        query = _pad_axes(query, {-3: q_pad, -1: _pow2_dim(query.shape[-1])})
+        key = _pad_axes(key, {-3: kv_pad, -1: _pow2_dim(key.shape[-1])})
+        value = _pad_axes(value, {-3: kv_pad, -1: _pow2_dim(value.shape[-1])})
 
     if query.shape[1] != l_q or key.shape[1] != l_kv:
         # Padding was applied. This would bias the results if we didn't mask
