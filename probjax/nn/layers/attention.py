@@ -36,6 +36,7 @@ from probjax.nn.pallas_kernels import (
 from probjax.nn.pallas_kernels.kernels.attention import _aligned_seq_len, use_splitkv
 from probjax.nn.pallas_kernels.kernels.attention_splitkv import splitkv_attention
 from probjax.nn.pallas_kernels.kernels.attention_xla import use_xla_attention
+from probjax.nn.layers.attention_device import cudnn_attention_or_none, resolve_auto_backward
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
@@ -1234,6 +1235,27 @@ def dot_product_attention(
         )
     if dtype is not None:
         query, key, value = (x.astype(dtype) for x in (query, key, value))
+    if (
+        implementation is None
+        and module is None
+        and precision is None
+        and query.ndim >= 3
+        and key.ndim == query.ndim == value.ndim
+        and query.shape[:-3] == key.shape[:-3]
+    ):
+        # Device table (H100: cuDNN for large calls with no mask / KVLenMask /
+        # equal-length causal); None falls through to the rules below.
+        batch_shape = query.shape[:-3]
+        flat = [x.reshape((-1,) + x.shape[-3:]) for x in (query, key, value)]
+        out = cudnn_attention_or_none(
+            *flat,
+            mask=mask,
+            bias=bias,
+            dropout_rate=dropout_rate if not deterministic else 0.0,
+            sm_scale=sm_scale if sm_scale is not None else 1.0 / math.sqrt(query.shape[-1]),
+        )
+        if out is not None:
+            return out.reshape(batch_shape + out.shape[-3:])
     if implementation == "pallas" or (
         implementation is None
         and _use_fused_gpu_attention(
@@ -1426,8 +1448,16 @@ def flex_attention(
     dropout_impl: str = "counter",
     diff_mode: str = "reverse",
     split_kv: bool | None = None,
+    implementation: str | None = None,
 ):
     """Fused softmax attention (Pallas kernels) with mask/bias objects.
+
+    ``implementation=None`` lets the device table
+    (:mod:`probjax.nn.layers.attention_device`) pick the kernel when every
+    kernel argument is at its default -- on H100 that routes large bf16/fp16
+    calls with no mask, a ``KVLenMask`` or equal-length causal masking to
+    cuDNN and resolves ``backward_pass_impl="auto"`` for the Triton path.
+    ``"triton"`` always runs the Pallas kernels.
 
     ``key``/``value`` may have fewer heads than ``query`` when
     ``enable_gqa=True`` (query head ``h`` uses KV head ``h // (Hq // Hkv)``);
@@ -1491,6 +1521,27 @@ def flex_attention(
     value = value[None] if value.ndim == 3 else value
 
     active_dropout = dropout_rate if not deterministic and dropout_rate > 0 else 0.0
+    if implementation not in (None, "triton"):
+        raise ValueError(f"implementation must be None or 'triton', got {implementation!r}")
+    device_defaults = (
+        implementation is None
+        and not interpret
+        and diff_mode == "reverse"
+        and grid is None
+        and split_kv is None
+        and backward_pass_impl == "auto"
+        and num_warps is None
+        and num_stages == 2
+        and (block_q, block_k, block_q_dkv, block_kv_dkv, block_q_dq, block_kv_dq)
+        == (128, 128, 64, 64, 64, 64)
+    )
+    if device_defaults:
+        out = cudnn_attention_or_none(
+            query, key, value, mask=mask, bias=bias,
+            dropout_rate=active_dropout, sm_scale=sm_scale,
+        )
+        if out is not None:
+            return out
     if diff_mode == "reverse" and use_splitkv(
         query,
         key,
@@ -1564,6 +1615,11 @@ def flex_attention(
     *_, l_q, h, _ = query.shape
     *_, l_kv, _, _ = key.shape
     output_dim = value.shape[-1] - sum(x.rank for x in low_rank_biases)
+    if device_defaults:
+        backward_pass_impl = (
+            resolve_auto_backward(l_q, l_kv, jnp.dtype(query.dtype).itemsize)
+            or backward_pass_impl
+        )
     # Pad the sequence axes to a multiple of the kernel tiles (not to the next
     # power of two: 600 -> 640 instead of 1024) and the head dim to a power of
     # two; the padded keys are masked below and the padded rows sliced off.
@@ -1578,6 +1634,28 @@ def flex_attention(
         block_kv_dq,
         backward_pass_impl,
     )
+    if (
+        backward_pass_impl in ("triton_fused", "fused")
+        and not interpret
+        and not use_xla_attention(query, interpret)
+        and min(
+            block_sizes.block_q_dkv,
+            block_sizes.block_kv_dkv,
+            block_sizes.block_q_dq,
+            block_sizes.block_kv_dq,
+        )
+        < 16
+    ):
+        # The fused backward matches the Q and KV tile counts; for strongly
+        # asymmetric lengths that forces < 16-row tiles, which Triton cannot
+        # lower, and the call fell back to Pallas interpret mode (H100: 25 s
+        # instead of 1 ms at 256 x 16384, with wrong dQ at 32768 x 256).  The
+        # split backward computes the same gradients with independent tiles.
+        backward_pass_impl = "triton_split"
+        q_pad, kv_pad, block_sizes = _flex_padded_lengths(
+            l_q, l_kv, block_q, block_k, block_q_dkv, block_kv_dkv,
+            block_q_dq, block_kv_dq, backward_pass_impl,
+        )
     if use_xla_attention(query, interpret):
         # CPU: mha runs its XLA path, which takes any lengths and head dims;
         # padding would only add work (16x for a single decode query).
