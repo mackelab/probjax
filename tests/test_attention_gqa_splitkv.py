@@ -97,7 +97,9 @@ def test_flex_gqa_matches_repeat_reference(hkv, causal):
     _assert_close_all(got, want, tol)
 
 
-@pytest.mark.parametrize("backward_pass_impl", ["triton_fused", "triton_split"])
+@pytest.mark.parametrize(
+    "backward_pass_impl", ["triton_fused", "triton_split", "triton_onepass"]
+)
 @pytest.mark.parametrize("hkv", [1, 2])
 def test_mha_interpret_gqa_indexes_shared_kv_head(backward_pass_impl, hkv):
     """Pallas interpret mode runs the Triton kernels' index maps on CPU."""
@@ -270,7 +272,9 @@ def test_cpu_flex_does_not_pad_decode_queries():
 
 
 @pytest.mark.parametrize("dtype", [jnp.float32, jnp.bfloat16])
-@pytest.mark.parametrize("backward_pass_impl", ["triton_fused", "triton_split"])
+@pytest.mark.parametrize(
+    "backward_pass_impl", ["triton_fused", "triton_split", "triton_onepass"]
+)
 @pytest.mark.parametrize("hkv,causal", [(1, False), (2, True), (4, False)])
 def test_gpu_gqa_native_matches_repeat(dtype, backward_pass_impl, hkv, causal):
     _requires_accelerator()
