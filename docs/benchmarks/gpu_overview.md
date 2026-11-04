@@ -57,7 +57,7 @@ Representative before → after pairs; each links to the full tables. Ratios at 
 | 24-layer `Transformer` | bf16 L4096 train step: peak, compile | 5,212 MB, 9.46 s | 2,126 MB, 1.07 s | [nn](gpu_nn.md#scan-over-layers-and-rematerialization) |
 | `SSMModel` + `MambaCell` | train step, 1024 tokens (state 128) | 139 ms | 37.2 ms | [nn](gpu_nn.md#ssmmodel-cells) |
 | Mamba scan, large state | GPU bwd B4 L2048 D512 state 128 | 174 ms | 26.6 ms | [kernels](gpu_kernels.md#mamba-selective-scan) |
-| `SSMModel` + `LRUCell` | train step L4096: time, compile | 22.5 ms, 12.9 s | 18.3 ms, 5.44 s | [nn](gpu_nn.md#ssmmodel-cells) |
+| `SSMModel` + `LRUCell` | train step L4096: time, compile | 22.5 ms, 12.9 s | 18.3 ms, 5.53 s | [nn](gpu_nn.md#ssmmodel-cells) |
 
 ¹ The CPU attention temporaries are for the non-causal fwd+bwd at the same length.
 
@@ -81,11 +81,11 @@ Several of these produced wrong numbers on GPU without any error or warning. If 
 - `RAttention`'s default Pallas path requested 288 KiB of shared memory and failed on every GPU; the RLA kernel also crashed for non-power-of-two head dims and under-estimated shared memory at `precision='highest'`. The default is now the chunked form, with a dtype-aware shared-memory model, chunk auto-shrink and fallback for the Pallas path.
 - The new Mamba GPU scan was tuned only at `state_dim = 16` and spilled registers at larger states (`MambaCell` defaults to `state_dim = model_dim`); commit 9386bfb added state-size-dependent tiles ([A/B](gpu_kernels.md#mamba-selective-scan)). The per-family Mamba JSON files use state 16 throughout.
 - `ssd` raised on CPU, and on GPU for one head (`SSDCell` defaults) and for `seq_len % 256 != 0`; all of these now run.
+- `SSDCell` returned non-finite outputs (unconstrained `log_alpha`), its heads were copies of one projection, and with `num_heads > 1` its output width was `model_dim // num_heads`. It is now a multi-head SSD layer with the Mamba-2 decay parameterization; the full Mamba-2 block is the new `Mamba2Cell` ([nn](gpu_nn.md#ssmmodel-cells)).
 
 **Known open issues** (measured, not fixed)
 
 - `KeyPaddingMask` gives wrong results in the kernel path for general use; use `KVLenMask`.
-- `SSDCell` runs but produced **non-finite outputs** in the `SSMModel` benchmark (`finite: false` in `gpu_nn.json`); its `log_alpha` is unconstrained, and with `num_heads > 1` the output width is `model_dim // num_heads`.
 - The `RAttention` layer runs out of memory at 8192 tokens because of its dense sliding-window branch.
 - `fit()` recompiles on every call.
 

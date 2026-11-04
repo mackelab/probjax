@@ -143,22 +143,31 @@ Same with the attention that was the default when this was measured (the dense e
 
 | cell | tokens | op | time before → after (ms) | compile before → after (s) | finite |
 | --- | ---: | --- | ---: | ---: | --- |
-| lru | 1024 | forward | 1.76 → 1.57 | 1.33 → 1.46 | true |
-| lru | 1024 | train step | 6.24 → 5.29 | 7.60 → 5.32 | true |
-| lru | 4096 | forward | 6.38 → 6.16 | 1.46 → 1.47 | true |
-| lru | 4096 | train step | 22.5 → 18.3 | 12.9 → 5.44 | true |
-| mamba | 1024 | forward | 14.6 → 4.83 | 2.50 → 2.57 | true |
-| mamba | 1024 | train step | 139 → 37.2 | 7.57 → 6.43 | true |
-| mamba | 4096 | forward | 65.1 → 18.7 | 2.30 → 2.48 | true |
-| mamba | 4096 | train step | OOM → 147 | OOM → 6.39 | true |
-| ssd | 1024 | forward | unsup. → 2.22 | unsup. → 6.54 | false |
-| ssd | 1024 | train step | unsup. → 7.86 | unsup. → 15.8 | false |
-| ssd | 4096 | forward | unsup. → 8.11 | unsup. → 7.19 | false |
-| ssd | 4096 | train step | unsup. → 27.9 | unsup. → 17.0 | false |
+| lru | 1024 | forward | 1.76 → 1.61 | 1.33 → 1.48 | true |
+| lru | 1024 | train step | 6.24 → 5.43 | 7.60 → 5.07 | true |
+| lru | 4096 | forward | 6.38 → 6.20 | 1.46 → 1.43 | true |
+| lru | 4096 | train step | 22.5 → 18.3 | 12.9 → 5.53 | true |
+| mamba | 1024 | forward | 14.6 → 5.09 | 2.50 → 2.54 | true |
+| mamba | 1024 | train step | 139 → 37.2 | 7.57 → 6.38 | true |
+| mamba | 4096 | forward | 65.1 → 18.7 | 2.30 → 2.58 | true |
+| mamba | 4096 | train step | OOM → 147 | OOM → 6.29 | true |
+| ssd | 1024 | forward | unsup. → 1.90 | unsup. → 4.93 | true |
+| ssd | 1024 | train step | unsup. → 7.17 | unsup. → 10.4 | true |
+| ssd | 4096 | forward | unsup. → 7.18 | unsup. → 4.99 | true |
+| ssd | 4096 | train step | unsup. → 25.2 | unsup. → 10.8 | true |
+| mamba2 | 1024 | forward | — → 3.12 | — → 3.16 | true |
+| mamba2 | 1024 | train step | — → 12.1 | — → 11.3 | true |
+| mamba2 | 4096 | forward | — → 11.7 | — → 2.52 | true |
+| mamba2 | 4096 | train step | — → 44.6 | — → 10.1 | true |
+| gdn | 1024 | forward | — → 2.62 | — → 4.35 | true |
+| gdn | 1024 | train step | — → 11.9 | — → 8.33 | true |
+| gdn | 4096 | forward | — → 10.2 | — → 4.28 | true |
+| gdn | 4096 | train step | — → 41.1 | — → 8.49 | true |
 
 - **LRUCell.** `linear_recurrence_scan` got a custom JVP, which shortens gradient compilation and speeds up the train step.
-- **SSDCell** raised before (the old GPU SSD kernel rejected one head, and on CPU `ssd` had no implementation). It runs now, but **its outputs were not finite** in this benchmark. Its `log_alpha` parameter is unconstrained, and with `num_heads > 1` the output width is `model_dim // num_heads`; both are open issues. Do not use `SSDCell` for training until they are fixed.
-- **MambaCell** uses `state_dim = model_dim` by default (128 here). The new Triton scan was first tuned only for state 16 and spilled at this size; after the state-size-dependent tiles of commit 9386bfb ([kernel page](gpu_kernels.md#mamba-selective-scan)) the `ssm` rows of `gpu_nn.json` were re-run, and those are the *after* numbers above (`config.ssm_rerun` in the JSON). The 4096-token train step, which ran out of memory before, now runs.
+- **SSDCell** raised before (the old GPU SSD kernel rejected one head, and on CPU `ssd` had no implementation). Its first fixed version ran but returned non-finite outputs: `log_alpha` came straight from a Linear layer (so the state could grow), heads were copies of one projection, and with `num_heads > 1` the output width was `model_dim // num_heads`. It is now a proper multi-head SSD layer (Mamba-2 decay `-exp(a_log) * softplus(dt)`, real heads with grouped `b`/`c`, skip term, output projection), and the `ssd` rows above are that version.
+- **Mamba2Cell** (new) is the full Mamba-2 block on the same SSD kernel: `expand=2`, short causal convolution, gated RMSNorm, `head_dim=64`, `state_dim=64`. **GatedDeltaNetCell** (`gdn`, new) uses its defaults. Neither existed before, so they have no *before* numbers.
+- **MambaCell** uses `state_dim = model_dim` by default (128 here). The new Triton scan was first tuned only for state 16 and spilled at this size; after the state-size-dependent tiles of commit 9386bfb ([kernel page](gpu_kernels.md#mamba-selective-scan)) the `ssm` rows of `gpu_nn.json` were re-run (again after the SSDCell rework, adding `mamba2` and `gdn`), and those are the *after* numbers above (`config.ssm_rerun` in the JSON). The 4096-token train step, which ran out of memory before, now runs.
 
 ??? note "Lane measurements of the SSM cells (kernel_nn_gpu / kernel_nn_cpu, pre-merge branch)"
 
@@ -189,7 +198,7 @@ Same with the attention that was the default when this was measured (the dense e
     | CPU | lru | 1024 | 4 | forward | 47.6 | 0.38 | 60.4 |
     | CPU | lru | 1024 | 4 | train step | 186 | 1.41 | 326 |
 
-`GatedDeltaNetCell` is new and was benchmarked at the kernel level only; see the [Gated DeltaNet section](gpu_kernels.md#gated-deltanet).
+For `GatedDeltaNetCell` at the kernel level see the [Gated DeltaNet section](gpu_kernels.md#gated-deltanet).
 
 ## UNet
 

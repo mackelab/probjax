@@ -106,7 +106,7 @@ Device peak at seq 8192 (fresh process, MB), and the longest fwd+bwd that fit on
 
 **Accuracy.** Errors are relative (`max|a − b| / max|b|`) against an fp32 `HIGHEST`-precision run of the chunked algorithm, so the chunked default shows 0 on outputs by construction; its gradients differ from that reference by at most 1.3e-07 at seq 8192. The fixed Pallas kernel runs its matmuls in TF32: output error 5.2e-04, gradient error up to 1.1e-02 (largest on `log_alpha`).
 
-**When to use which.** Keep the default. The chunked form is faster than the fixed Triton kernel at every measured GPU shape, keeps no residuals (`remat='full'`), runs any shape, and is the only CPU path. `ssd_linear_scan` is a reference only: its backward stores every state and runs out of memory from seq 2048 on GPU. Known open issues: `SSDCell` with `num_heads > 1` produces outputs of width `model_dim // num_heads`, and its `log_alpha` is unconstrained (see the [nn page](gpu_nn.md#ssmmodel-cells)).
+**When to use which.** Keep the default. The chunked form is faster than the fixed Triton kernel at every measured GPU shape, keeps no residuals (`remat='full'`), runs any shape, and is the only CPU path. `ssd_linear_scan` is a reference only: its backward stores every state and runs out of memory from seq 2048 on GPU. `ssd()` also forwards `chunk_size`, `remat`, `precision` and `return_final_state` to the chunked path. `SSDCell` and the new `Mamba2Cell` are built on it (see the [nn page](gpu_nn.md#ssmmodel-cells)).
 
 ## Mamba selective scan
 

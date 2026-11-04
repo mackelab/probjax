@@ -355,8 +355,7 @@ def suite_transformer(rows, args, diffusion=False):
 
 
 def suite_ssm(rows, args):
-    # SSDCell's defaults (num_heads=1) are rejected by the GPU SSD kernel
-    # (needs >= 2 heads); recorded as an error row (maintainer question).
+    # SSDCell runs on every backend through the chunked SSD path.
     for tokens in args.ssm_tokens:
         for cell in args.cells:
             meta = dict(

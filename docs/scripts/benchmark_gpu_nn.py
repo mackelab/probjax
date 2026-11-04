@@ -12,7 +12,7 @@ Suites:
   XLA or cuDNN implementation).
 * ``moe``  -- dropless ``MoELayer`` with the Pallas grouped matmul vs the
   blocked and ``lax.ragged_dot`` fallbacks.
-* ``ssm``  -- ``SSMModel`` with ``MambaCell`` / ``SSDCell`` / ``LRUCell``.
+* ``ssm``  -- ``SSMModel`` with ``MambaCell`` / ``SSDCell`` / ``Mamba2Cell`` / ``GatedDeltaNetCell`` / ``LRUCell``.
 * ``unet`` -- ``UNet`` on image batches.
 
 A train step is ``value_and_grad`` of an MSE loss followed by an AdamW update,
@@ -32,8 +32,9 @@ from flax import nnx
 from docs.scripts._gpu_bench import run_safely, time_jax, write_results
 from probjax.nn import DiffusionTransformer, Transformer
 from probjax.nn.layers.attention import flex_attention
+from probjax.nn.layers.delta_net import GatedDeltaNetCell
 from probjax.nn.layers.moe import MoELayer
-from probjax.nn.layers.ssm import LRUCell, MambaCell, SSDCell
+from probjax.nn.layers.ssm import LRUCell, Mamba2Cell, MambaCell, SSDCell
 from probjax.nn.nets.ssm import SSMModel
 from probjax.nn.nets.unets import UNet
 
@@ -149,12 +150,13 @@ def suite_moe(rows, args):
 
 
 def suite_ssm(rows, args):
-    # ``ssd`` uses SSDCell defaults (num_heads=1), which the Triton SSD kernel
-    # rejects (it needs >=2 heads); with num_heads>1 SSDCell's output width is
-    # model_dim // num_heads, so no SSDCell configuration runs on GPU today.
+    # ``ssd`` (SSDCell) and ``mamba2`` (Mamba2Cell) use their defaults;
+    # ``gdn`` is GatedDeltaNetCell with 4 heads of 32.
     cells = {
         "mamba": (MambaCell, None),
         "ssd": (SSDCell, None),
+        "mamba2": (Mamba2Cell, None),
+        "gdn": (GatedDeltaNetCell, None),
         "lru": (LRUCell, None),
     }
     for tokens in args.ssm_tokens:
