@@ -108,11 +108,12 @@ def default_num_splits(
 ) -> int:
     """Splits so that ``B * Hkv * row_blocks * splits`` fills the GPU.
 
-    Each split keeps at least ``_MIN_SPLIT_LEN`` keys so the per-split loop
-    amortises the combine.
+    At least two splits whenever every split keeps ``_MIN_SPLIT_LEN`` keys
+    (two were never slower than the regular forward in the RTX 3090 sweep, even
+    when the grid was already full), and no more than that length allows.
     """
     programs = batch * num_kv_heads * row_blocks
-    want = max(1, math.ceil(_TARGET_PROGRAMS / programs))
+    want = max(2, math.ceil(_TARGET_PROGRAMS / programs))
     most = max(1, kv_len // max(_MIN_SPLIT_LEN, block_k))
     return int(min(want, most))
 
