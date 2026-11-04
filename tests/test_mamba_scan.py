@@ -131,6 +131,19 @@ def test_gpu_kernels_unaligned_shapes(batch, seq, dim, state):
 
 
 @_requires_gpu
+@pytest.mark.parametrize(
+    "batch,seq,dim,state",
+    [(2, 96, 128, 32), (2, 130, 128, 64), (1, 70, 96, 128), (2, 64, 40, 100)],
+)
+def test_gpu_kernels_large_state_dims(batch, seq, dim, state):
+    """The state-size-dependent tile configs (MambaCell defaults state_dim to
+    model_dim) stay exact."""
+    args = _inputs(batch, seq, dim, state, seed=seq + state)
+    fn = functools.partial(compute_mamba_scan, seq_tile_size=64, dim_tile_size=128)
+    _assert_matches_reference(fn, args, fwd_tol=2e-5, grad_tol=2e-5)
+
+
+@_requires_gpu
 def test_gpu_long_sequence_gradients_relative_error():
     """Regression for the reported O(100) absolute grad error at L=8192.
 

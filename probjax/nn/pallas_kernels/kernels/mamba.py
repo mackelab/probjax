@@ -849,6 +849,29 @@ _GPU_SCAN_CONFIG = {
     "bwd": {"chunk": 4, "dim_block": 32, "num_warps": 2, "segment": 256},
 }
 
+# Per-program state is [state_dim, dim_block] fp32 in registers. The defaults
+# above are tuned for state_dim <= 16 and spill badly beyond it (RTX 3090,
+# B8 L1024 D128: S=64 fwd 7.0 ms / bwd 28 ms, S=128 fwd 8.3 / bwd 48 ms with
+# the defaults vs 0.44 / 1.3 and 0.91 / 6.6 ms with these overrides).
+_GPU_SCAN_CONFIG_BY_STATE = (
+    (16, {"fwd": {}, "bwd": {}}),
+    (64, {
+        "fwd": {"chunk": 4, "dim_block": 32, "num_warps": 4},
+        "bwd": {"chunk": 4, "dim_block": 16, "num_warps": 4},
+    }),
+    (None, {
+        "fwd": {"chunk": 4, "dim_block": 16, "num_warps": 2},
+        "bwd": {"chunk": 8, "dim_block": 4, "num_warps": 4},
+    }),
+)
+
+
+def _gpu_scan_config(direction: str, state_dim: int, config=None) -> dict:
+    for limit, overrides in _GPU_SCAN_CONFIG_BY_STATE:
+        if limit is None or state_dim <= limit:
+            break
+    return {**_GPU_SCAN_CONFIG[direction], **overrides[direction], **(config or {})}
+
 
 def _next_pow2(n: int) -> int:
     return 1 << max(0, (int(n) - 1).bit_length())
@@ -1126,7 +1149,7 @@ def _gpu_entry_states(padded, lay: _GpuLayout):
 
 
 def _gpu_scan_forward(x, a, b, c, delta, d, *, config=None):
-    cfg = dict(_GPU_SCAN_CONFIG["fwd"], **(config or {}))
+    cfg = _gpu_scan_config("fwd", a.shape[0], config)
     _, seq, dim = x.shape
     padded = _gpu_scan_pad(
         x, a, b, c, delta, d, chunk=cfg["chunk"], dim_block=cfg["dim_block"]
@@ -1145,7 +1168,7 @@ def _gpu_scan_forward(x, a, b, c, delta, d, *, config=None):
 
 
 def _gpu_scan_backward(dy, x, a, b, c, delta, d, *, config=None):
-    cfg = dict(_GPU_SCAN_CONFIG["bwd"], **(config or {}))
+    cfg = _gpu_scan_config("bwd", a.shape[0], config)
     batch, seq, dim = x.shape
     state = a.shape[0]
     padded = _gpu_scan_pad(
