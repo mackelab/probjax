@@ -237,7 +237,7 @@ def test_attention_forward_mode_jvp_matches_reference():
     dv = jax.random.normal(key_dv, (batch_size, seq_len, num_heads, qkv_dim))
 
     def loss_ref(q, k, v):
-        return jnp.sum(dot_product_attention(q, k, v))
+        return jnp.sum(dot_product_attention(q, k, v, implementation="xla"))
 
     def loss_flex(q, k, v):
         return jnp.sum(flex_attention(q, k, v))
@@ -815,7 +815,7 @@ def test_cross_attention_forward_lengths_mismatch(
     q = jax.random.normal(key_q, (batch_size, q_len, num_heads, qkv_dim))
     k = jax.random.normal(key_k, (batch_size, kv_len, num_heads, qkv_dim))
     v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
-    out_ref = dot_product_attention(q, k, v)
+    out_ref = dot_product_attention(q, k, v, implementation="xla")
     out_flex = flex_attention(q, k, v)
     assert out_ref.shape == out_flex.shape == (batch_size, q_len, num_heads, qkv_dim)
     assert jnp.allclose(out_ref, out_flex, atol=FWD_ATOL, rtol=FWD_RTOL), (
@@ -841,7 +841,7 @@ def test_cross_attention_backward_lengths_mismatch(
     v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
 
     def loss_ref(q, k, v):
-        out = dot_product_attention(q, k, v)
+        out = dot_product_attention(q, k, v, implementation="xla")
         return jnp.sum(out**2)
 
     def loss_flex(q, k, v):
@@ -938,7 +938,7 @@ def test_cross_attention_backward_impl_variants(
     v = jax.random.normal(key_v, (batch_size, kv_len, num_heads, qkv_dim))
 
     def loss_ref(q, k, v):
-        out = dot_product_attention(q, k, v)
+        out = dot_product_attention(q, k, v, implementation="xla")
         return jnp.sum(out**2)
 
     def loss_flex(q, k, v):

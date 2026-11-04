@@ -1153,7 +1153,7 @@ class InducedSelfAttention(nnx.Module):
 _FUSED_MASKS = (NoMask, CausalMask, LocalWindowMask, CausalLocalWindowMask)
 # Below this many keys the einsum path is as fast as the fused kernel and the
 # [T, T] score matrix is small (see docs/benchmarks/kernel_attn_gpu_dispatch.json).
-_FUSED_MIN_KV_LEN = 128
+_FUSED_MIN_KV_LEN = 64
 
 
 def _use_fused_gpu_attention(

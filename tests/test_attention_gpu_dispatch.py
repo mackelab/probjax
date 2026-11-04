@@ -177,7 +177,7 @@ def test_dispatch_predicate(monkeypatch):
     assert _dispatch_ok(q, dropout_rate=0.1, deterministic=True)
     assert not _dispatch_ok(q, module=object())
     assert not _dispatch_ok(q, precision="highest")
-    assert not _dispatch_ok(jnp.zeros((2, 64, 4, 32)))  # too short for the kernel
+    assert not _dispatch_ok(jnp.zeros((2, 32, 4, 32)))  # too short for the kernel
     assert not _dispatch_ok(jnp.zeros((2, 256, 4, 32), jnp.int32))
     # No NVIDIA device / not a GPU backend.
     monkeypatch.setattr(attn_kernels, "_query_triton_smem_limit", lambda: None)
@@ -317,7 +317,7 @@ def test_smem_adjustment_never_grows(monkeypatch, dtype_bytes, head_dim):
 
 
 @pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
-@pytest.mark.parametrize("head_dim", [64, 128])
+@pytest.mark.parametrize("head_dim", [16, 32, 64, 128, 256])
 def test_auto_config_compiles_gpu(dtype, head_dim):
     """Under jit the proactive SMEM estimate is all we have: it must fit."""
     _requires_accelerator()
@@ -338,3 +338,42 @@ def test_auto_config_compiles_gpu(dtype, head_dim):
     )
     for a, b in zip(grads, gr, strict=True):
         assert _rel(a, b) < 2 * tol
+
+
+def test_small_smem_num_warps(monkeypatch):
+    monkeypatch.setattr(attn_kernels, "_SMEM_LIMIT_CACHE", 101376)
+    warps = attn_kernels._small_smem_num_warps
+    assert warps(None, 2, head_dim=128, dtype_bytes=4) == 4
+    assert warps(8, 2, head_dim=128, dtype_bytes=4) == 8  # explicit wins
+    assert warps(None, 1, head_dim=128, dtype_bytes=4) is None  # non-default
+    assert warps(None, 2, head_dim=64, dtype_bytes=2) is None
+    monkeypatch.setattr(attn_kernels, "_SMEM_LIMIT_CACHE", 232448)  # H100
+    assert warps(None, 2, head_dim=128, dtype_bytes=4) is None
+
+
+def test_smem_estimates_match_sm86_failures():
+    """Regression: estimates never fall below bytes Triton requested on sm_86."""
+    fwd = attn_kernels._estimate_fwd_smem_bytes
+    bwd = attn_kernels._estimate_bwd_smem_bytes
+    # (bq, bk, bd, stages, dtype_bytes) -> requested bytes (RESOURCE_EXHAUSTED)
+    for args, requested in [
+        ((64, 64, 128, 3, 2), 106496),
+        ((128, 64, 128, 3, 2), 114688),
+        ((128, 128, 128, 2, 2), 131072),
+        ((128, 64, 64, 3, 4), 114688),
+        ((64, 128, 64, 2, 4), 114688),
+        ((128, 64, 256, 1, 2), 114688),
+    ]:
+        assert fwd(*args) >= requested
+    # (outer, inner, bd, dtype_bytes) -> requested bytes
+    for (outer, inner, bd, b), requested in [
+        ((64, 128, 128, 2), 114688),
+        ((128, 64, 128, 2), 114688),
+        ((128, 128, 128, 2), 163840),
+        ((64, 64, 128, 4), 131072),
+        ((128, 32, 128, 4), 163840),
+        ((128, 128, 64, 4), 131072),
+    ]:
+        assert bwd(inner, outer, outer, inner, bd, b) + 1024 >= requested
+    # The tuned fp32 d=128 backward (64 x 32) fits the 99 KB of an RTX 3090.
+    assert bwd(32, 64, 64, 32, 128, 4) <= 101376 - attn_kernels._SMEM_RESERVE

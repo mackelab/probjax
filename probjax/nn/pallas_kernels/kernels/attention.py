@@ -1533,21 +1533,26 @@ _SMEM_LIMIT_CACHE: int | None | str = "uninitialized"
 # Above this limit we assume a datacenter GPU and keep requested configs.
 _DATACENTER_SMEM_THRESHOLD = 150 * 1024
 _MIN_TILE = 16
-# Fraction of the reported limit the estimates may use (headroom for Triton
-# bookkeeping such as barriers; the models below are fitted on sm_86).
-_SMEM_HEADROOM = 0.95
+# Bytes kept free below the reported limit (Triton bookkeeping such as
+# barriers; the estimates below reproduce the requested bytes of every
+# RESOURCE_EXHAUSTED failure in the sm_86 tile sweep exactly or over-estimate).
+_SMEM_RESERVE = 2048
 
 # Default tiles on small-SMEM GPUs, keyed by (dtype bytes, padded head dim):
-# (block_q, block_k, bwd_outer, bwd_inner, num_stages). ``bwd_outer`` is the
+# (block_q, block_k, bwd_outer, bwd_inner, num_stages, num_warps or None for
+# the head-dim based default). ``bwd_outer`` is the
 # resident tile of the fused backward (``block_kv_dkv`` = ``block_q_dq``),
 # ``bwd_inner`` the streamed one (``block_q_dkv`` = ``block_kv_dq``). Measured
 # on an RTX 3090 with docs/scripts/benchmark_gpu_attention_tiles.py
 # (docs/benchmarks/kernel_attn_gpu_tiles_before.json); only used when the
-# caller kept the default block sizes / num_stages.
-_SMALL_SMEM_TUNED: dict[tuple[int, int], tuple[int, int, int, int, int]] = {
-    (2, 64): (64, 64, 64, 64, 2),
-    (2, 128): (128, 64, 64, 32, 2),
-    (4, 64): (64, 32, 32, 32, 1),
+# caller kept the default block sizes / num_stages / num_warps.
+_SMALL_SMEM_TUNED: dict[tuple[int, int], tuple[int, int, int, int, int, int | None]] = {
+    (2, 32): (64, 64, 64, 64, 2, None),
+    (2, 64): (64, 64, 64, 64, 2, None),
+    (2, 128): (128, 64, 64, 32, 2, None),
+    (4, 32): (128, 64, 64, 64, 2, None),
+    (4, 64): (128, 64, 32, 32, 1, None),
+    (4, 128): (64, 32, 64, 32, 1, 4),
 }
 _DEFAULT_BLOCK_SIZES = (128, 128, 64, 64, 64, 64)
 _DEFAULT_NUM_STAGES = 2
@@ -1609,13 +1614,15 @@ def _estimate_fwd_smem_bytes(
 ) -> int:
     """Shared memory Triton allocates for the forward kernel (upper bound).
 
-    K and V tiles are multi-buffered (``stages`` copies each) and the
-    ``bq x bk`` probability tile is staged through shared memory for the layout
-    conversion that feeds the second dot; Q stays in registers. Fitted to the
-    RESOURCE_EXHAUSTED reports of the tile sweep on sm_86: it matches the
-    requested bytes for ``stages >= 2`` and never under-estimates.
+    Two allocation patterns were observed on sm_86 (RESOURCE_EXHAUSTED reports
+    of the tile sweep); we take the larger: multi-buffered K and V tiles
+    (``stages`` copies each), or the Q tile plus ``2 * (stages - 1)`` (at least
+    one) K/V tiles. Both add the ``bq x bk`` probability tile staged for the
+    second dot. Matches every requested size measured and never under-estimates.
     """
-    return (2 * max(stages, 1) * bk * bd + bq * bk) * dtype_bytes
+    kv_buffers = 2 * max(stages, 1) * bk * bd
+    q_resident = bq * bd + max(1, 2 * (stages - 1)) * bk * bd
+    return (max(kv_buffers, q_resident) + bq * bk) * dtype_bytes
 
 
 def _estimate_bwd_smem_bytes(
@@ -1623,12 +1630,13 @@ def _estimate_bwd_smem_bytes(
 ) -> int:
     """Shared memory of the fused backward kernel (upper bound, see above).
 
-    Resident (``outer``) and streamed (``inner``) tiles of two operands each,
-    plus one score tile; pipelining adds only ~1 KB here.
+    Resident (``outer``) and streamed (``inner``) tiles of two operands each;
+    for 16-bit inputs one score tile is additionally staged for the cast that
+    feeds the second dot (fp32 needs no cast). Pipelining adds only ~1 KB.
     """
     outer = max(bkv_dkv, bq_dq)
     inner = max(bq_dkv, bkv_dq)
-    scores = max(bq_dkv * bkv_dkv, bq_dq * bkv_dq)
+    scores = max(bq_dkv * bkv_dkv, bq_dq * bkv_dq) if dtype_bytes < 4 else 0
     return (2 * (outer + inner) * bd + scores) * dtype_bytes
 
 
@@ -1658,7 +1666,7 @@ def _adjust_fwd_config_for_smem(
     # Clamp to sequence-independent safe starting point; loop guards jit path.
     while True:
         est = _estimate_fwd_smem_bytes(bq, bk, bd, stages, dtype_bytes)
-        if est <= int(limit * _SMEM_HEADROOM):
+        if est <= limit - _SMEM_RESERVE:
             return (bq, bk, stages)
         nxt = _shrink_fwd_config(bq, bk, stages)
         if nxt is None:
@@ -1699,7 +1707,7 @@ def _adjust_block_sizes_for_smem(
     limit = _query_triton_smem_limit()
     if limit is None or limit >= _DATACENTER_SMEM_THRESHOLD:
         return (block_sizes, num_stages)
-    budget = int(limit * _SMEM_HEADROOM)
+    budget = limit - _SMEM_RESERVE
     bd = _next_pow2(head_dim)
     req = (
         block_sizes.block_q,
@@ -1714,7 +1722,7 @@ def _adjust_block_sizes_for_smem(
     stages = num_stages
     tuned = _SMALL_SMEM_TUNED.get((dtype_bytes, bd))
     if tuned is not None and num_stages == _DEFAULT_NUM_STAGES:
-        t_bq, t_bk, t_outer, t_inner, stages = tuned
+        t_bq, t_bk, t_outer, t_inner, stages, _ = tuned
         if fwd_tiles == _DEFAULT_BLOCK_SIZES[:2]:
             fwd_tiles = (t_bq, t_bk)
         if bwd_tiles == _DEFAULT_BLOCK_SIZES[2:]:
@@ -1747,6 +1755,19 @@ def _adjust_block_sizes_for_smem(
         BlockSizes(*(min(r, max(n, _MIN_TILE)) for r, n in zip(req, new, strict=True))),
         stages,
     )
+
+
+def _small_smem_num_warps(
+    num_warps: int | None, num_stages: int, *, head_dim: int, dtype_bytes: int
+) -> int | None:
+    """Tuned ``num_warps`` for default calls on small-SMEM devices (else as is)."""
+    if num_warps is not None or num_stages != _DEFAULT_NUM_STAGES:
+        return num_warps
+    limit = _query_triton_smem_limit()
+    if limit is None or limit >= _DATACENTER_SMEM_THRESHOLD:
+        return num_warps
+    tuned = _SMALL_SMEM_TUNED.get((dtype_bytes, _next_pow2(head_dim)))
+    return num_warps if tuned is None else tuned[5]
 
 
 def _iter_smaller_block_configs(block_sizes: BlockSizes, num_stages: int) -> Any:
@@ -2333,14 +2354,14 @@ def mha(
     )
     factory = _make_mha_forward_jvp if force_forward_mode else _make_mha_custom_vjp
 
-    def _build_inner(bs: BlockSizes, st: int):
+    def _build_inner(bs: BlockSizes, st: int, warps: int | None = num_warps):
         return factory(
             mask_treedef=mask_treedef,
             bias_treedef=bias_treedef,
             sm_scale=sm_scale,
             block_sizes=bs,
             backward_pass_impl=backward_pass_impl,
-            num_warps=num_warps,
+            num_warps=warps,
             num_stages=st,
             grid=grid,
             interpret=interpret,
@@ -2384,6 +2405,15 @@ def mha(
             return (block_sizes, num_stages)
 
     start_bs, start_st = _maybe_proactive()
+    try:
+        start_warps = _small_smem_num_warps(
+            num_warps,
+            num_stages,
+            head_dim=int(q.shape[-1]),
+            dtype_bytes=int(jnp.dtype(q.dtype).itemsize),
+        )
+    except Exception:
+        start_warps = num_warps
 
     def _is_tracer_arg(x) -> bool:
         try:
@@ -2400,12 +2430,14 @@ def mha(
     # proactive config above is the best we can do there. For eager execution
     # we can also retry with smaller tiles on RESOURCE_EXHAUSTED.
     if not eager:
-        return _build_inner(start_bs, start_st)(q, k, v, rng, mask_leaves, bias_leaves)
+        return _build_inner(start_bs, start_st, start_warps)(
+            q, k, v, rng, mask_leaves, bias_leaves
+        )
 
     last_exc: BaseException | None = None
     for attempt_bs, attempt_st in _iter_smaller_block_configs(start_bs, start_st):
         try:
-            out = _build_inner(attempt_bs, attempt_st)(
+            out = _build_inner(attempt_bs, attempt_st, start_warps)(
                 q, k, v, rng, mask_leaves, bias_leaves
             )
             # Force synchronization so async compilation/runtime errors surface
@@ -2425,7 +2457,9 @@ def mha(
             continue
     if last_exc is not None:
         raise last_exc
-    return _build_inner(start_bs, start_st)(q, k, v, rng, mask_leaves, bias_leaves)
+    return _build_inner(start_bs, start_st, start_warps)(
+        q, k, v, rng, mask_leaves, bias_leaves
+    )
 
 
 def _is_direct_jvp_trace(*args) -> bool:
