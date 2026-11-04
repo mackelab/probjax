@@ -93,6 +93,7 @@ def test_pallas_interpreter_gradient_matches_scan(feature_map):
         np.testing.assert_allclose(actual_grad, expected_grad, atol=3e-5, rtol=3e-5)
 
 
+@pytest.mark.parametrize("rank3", [True, False])
 @pytest.mark.parametrize("feature_map", list(FeatureMap))
 @pytest.mark.parametrize(
     ("num_heads", "num_kv_heads", "seq_len", "chunk_size"),
@@ -104,8 +105,11 @@ def test_pallas_interpreter_gradient_matches_scan(feature_map):
     ],
 )
 def test_chunked_matches_scan_forward_and_gradients(
-    feature_map, num_heads, num_kv_heads, seq_len, chunk_size
+    monkeypatch, rank3, feature_map, num_heads, num_kv_heads, seq_len, chunk_size
 ):
+    # Both the CPU (rank-3) and GPU (6-D einsum) forms run on every backend.
+    monkeypatch.setattr(la, "_use_rank3_form", lambda: rank3)
+    jax.clear_caches()
     inputs = _inputs(num_heads=num_heads, num_kv_heads=num_kv_heads, seq_len=seq_len)
     with _exact:
         expected = residual_linear_attention_scan(

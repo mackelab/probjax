@@ -175,9 +175,14 @@ def bench_kernel(rows, device, seqs, dims, dtypes, impls, batch, heads, chunk):
                             row.update(time_jax(jfn, *args, repeats=5))
                             # Errors vs the fp32 scan reference (computed once).
                             if mode not in ref:
-                                ref[mode] = jax.device_get(
-                                    _jitted(_impl("scan", chunk), mode)(*args32)
-                                )
+                                try:
+                                    ref[mode] = jax.device_get(
+                                        _jitted(_impl("scan", chunk), mode)(*args32)
+                                    )
+                                except Exception:  # noqa: BLE001 - scan OOM
+                                    ref[mode] = None
+                            if ref[mode] is None:
+                                return row
                             out = jax.device_get(jfn(*args))
                             leaves = jax.tree.leaves(out)
                             ref_leaves = jax.tree.leaves(ref[mode])
@@ -412,8 +417,15 @@ def main():
         )
     if "peak" in args.suites:
         bench_peak(rows, _peak_cases(args.device), chunk)
+    # Later rows (e.g. --append reruns) replace earlier rows of the same case.
+    key_fields = ("suite", "impl", "mode", "chunk", "batch", "heads", "seq", "dim")
+    deduped = {}
+    for row in rows:
+        key = tuple(row.get(k) for k in key_fields) + (row.get("dtype"),)
+        deduped[key] = row
+    rows = list(deduped.values())
     config = dict(
-        suites=args.suites,
+        suites=sorted({row["suite"] for row in rows}),
         window=WINDOW,
         chunk=chunk,
         batch=args.batch,

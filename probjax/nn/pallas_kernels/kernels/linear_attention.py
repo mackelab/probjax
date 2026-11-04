@@ -143,6 +143,109 @@ def _linear_attention_scan_core(
     return jnp.moveaxis(output, 0, 2), final_state
 
 
+def _chunked_batched(q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims):
+    """GPU form: 6-D einsums (cuBLAS batches them well)."""
+    (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
+    ) = dims
+    f32 = jnp.float32
+    qc = q_features.reshape(batch, num_kv_heads, groups, num_chunks, chunk, feature_dim)
+    kc = k_features.reshape(batch, num_kv_heads, num_chunks, chunk, feature_dim)
+    vc = v.reshape(batch, num_kv_heads, num_chunks, chunk, value_dim)
+    state0 = h0.astype(jnp.float32).reshape(
+        batch, num_kv_heads, groups, feature_dim, value_dim
+    )
+
+    chunk_kv = einsum("bjncf,bjncd->bjnfd", kc, vc)
+    total = jnp.sum(chunk_kv, axis=2)
+    # Exclusive prefix sum: state entering chunk n (excluding h0).
+    prefix = jnp.cumsum(chunk_kv, axis=2) - chunk_kv
+
+    q32 = qc.astype(f32)
+    inter = einsum("bjgncf,bjgfd->bjgncd", q32, state0) + einsum(
+        "bjgncf,bjnfd->bjgncd", q32, prefix
+    )
+    scores = einsum("bjgncf,bjnsf->bjgncs", qc, kc)
+    causal = jnp.tril(jnp.ones((chunk, chunk), dtype=bool))
+    scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
+    intra = einsum("bjgncs,bjnsd->bjgncd", scores, vc)
+    output = (inter + intra).astype(dtype)
+    output = output.reshape(batch, num_heads, padded, value_dim)[:, :, :seq_len]
+    final_state = state0 + total[:, :, None]
+    return output, final_state
+
+
+def _chunked_rank3(q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims):
+    """CPU form: rank-3 batched matmuls only."""
+    (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
+    ) = dims
+    f32 = jnp.float32
+    # All matmuls are rank-3 with one leading batch axis: XLA:CPU runs 6-D
+    # einsums with interior batch axes 1.2-2x slower (forward). Rows of one chunk from
+    # all G query heads that share a kv head are stacked ([G * c, F]).
+    rows = groups * chunk
+    flat = batch * num_kv_heads * num_chunks
+    qn = q_features.reshape(batch, num_kv_heads, groups, num_chunks, chunk, feature_dim)
+    if groups > 1:
+        qn = jnp.swapaxes(qn, 2, 3)
+    qn = qn.reshape(flat, rows, feature_dim)
+    kn = k_features.reshape(flat, chunk, feature_dim)
+    vn = v.reshape(flat, chunk, value_dim)
+    state0 = h0.astype(jnp.float32).reshape(batch * num_heads, feature_dim, value_dim)
+
+    chunk_kv = einsum("xcf,xcd->xfd", kn, vn).reshape(
+        batch * num_kv_heads, num_chunks, feature_dim, value_dim
+    )
+    total = jnp.sum(chunk_kv, axis=1)
+    # Exclusive prefix sum: state entering chunk n (excluding h0).
+    prefix = (jnp.cumsum(chunk_kv, axis=1) - chunk_kv).reshape(
+        flat, feature_dim, value_dim
+    )
+
+    scores = einsum("xrf,xsf->xrs", qn, kn)
+    causal = jnp.tile(jnp.tril(jnp.ones((chunk, chunk), dtype=bool)), (groups, 1))
+    scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
+    local = einsum("xrs,xsd->xrd", scores, vn) + einsum(
+        "xrf,xfd->xrd", qn.astype(f32), prefix
+    )
+    local = local.reshape(batch, num_kv_heads, num_chunks, groups, chunk, value_dim)
+    if groups > 1:
+        local = jnp.swapaxes(local, 2, 3)
+    local = local.reshape(batch * num_heads, padded, value_dim)
+    # Initial-state term per query head: one [L, F] @ [F, D] matmul.
+    q_heads = q_features.reshape(batch * num_heads, padded, feature_dim)
+    output = local + einsum("xlf,xfd->xld", q_heads.astype(f32), state0)
+    output = output.astype(dtype).reshape(batch, num_heads, padded, value_dim)
+    output = output[:, :, :seq_len]
+    final_state = state0.reshape(
+        batch, num_kv_heads, groups, feature_dim, value_dim
+    ) + total.reshape(batch, num_kv_heads, 1, feature_dim, value_dim)
+    return output, final_state
+
+
+def _use_rank3_form() -> bool:
+    return jax.default_backend() == "cpu"
+
+
 def _linear_attention_chunked_core(
     q: jax.Array,
     k: jax.Array,
@@ -192,13 +295,6 @@ def _linear_attention_chunked_core(
         )
     compute_dtype = v.dtype
 
-    qc = q_features.reshape(batch, num_kv_heads, groups, num_chunks, chunk, feature_dim)
-    kc = k_features.reshape(batch, num_kv_heads, num_chunks, chunk, feature_dim)
-    vc = v.reshape(batch, num_kv_heads, num_chunks, chunk, value_dim)
-    state0 = h0.astype(jnp.float32).reshape(
-        batch, num_kv_heads, groups, feature_dim, value_dim
-    )
-
     f32 = jnp.float32
     # float32 inputs use full-precision dots: on GPU the default (TF32) costs
     # ~3 mantissa digits, and the feature-map backward (softmax/relu of +/-
@@ -208,22 +304,25 @@ def _linear_attention_chunked_core(
     einsum = functools.partial(
         jnp.einsum, preferred_element_type=f32, precision=precision
     )
-    chunk_kv = einsum("bjncf,bjncd->bjnfd", kc, vc)
-    total = jnp.sum(chunk_kv, axis=2)
-    # Exclusive prefix sum: state entering chunk n (excluding h0).
-    prefix = jnp.cumsum(chunk_kv, axis=2) - chunk_kv
-
-    q32 = qc.astype(f32)
-    inter = einsum("bjgncf,bjgfd->bjgncd", q32, state0) + einsum(
-        "bjgncf,bjnfd->bjgncd", q32, prefix
+    dims = (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
     )
-    scores = einsum("bjgncf,bjnsf->bjgncs", qc, kc)
-    causal = jnp.tril(jnp.ones((chunk, chunk), dtype=bool))
-    scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
-    intra = einsum("bjgncs,bjnsd->bjgncd", scores, vc)
-    output = (inter + intra).astype(dtype)
-    output = output.reshape(batch, num_heads, padded, value_dim)[:, :, :seq_len]
-    final_state = state0 + total[:, :, None]
+    # XLA:CPU runs 6-D einsums with interior batch axes 1.2-2x slower than
+    # rank-3 batched matmuls; on GPU the 6-D form is 3-13% faster (no
+    # head/chunk transposes) except for GQA.
+    form = _chunked_rank3 if _use_rank3_form() else _chunked_batched
+    output, final_state = form(
+        q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims
+    )
     return output, final_state.reshape(h0.shape)
 
 
