@@ -371,14 +371,17 @@ def test_ssd_requires_supported_backend_config():
     v = jax.random.normal(key, (batch, num_heads, seq_len, dv), dtype=jnp.float32)
     log_alpha = jax.random.normal(key, (batch, num_heads, seq_len), dtype=jnp.float32)
 
-    if jax.default_backend() != "tpu":
+    if jax.default_backend() == "cpu":
+        # The Pallas kernel needs an accelerator ...
         with pytest.raises(RuntimeError):
-            ssd(q, k, v, log_alpha)
-    else:
-        out = ssd(q, k, v, log_alpha)
-        ref, _ = ssd_linear_scan(q, k, v, log_alpha)
-        assert out.shape == ref.shape
-        assert jnp.allclose(out, ref, atol=1e-2, rtol=1e-2)
+            ssd(q, k, v, log_alpha, implementation="pallas")
+    # ... but the default dispatch works everywhere (chunked XLA on CPU and as
+    # the GPU fallback for shapes the Triton kernel rejects).
+    out = ssd(q, k, v, log_alpha)
+    ref, _ = ssd_linear_scan(q, k, v, log_alpha)
+    assert out.shape == ref.shape
+    # log_alpha ~ N(0, 1) makes the state grow to ~1e16: compare relative to max.
+    assert jnp.max(jnp.abs(out - ref)) <= 1e-3 * jnp.max(jnp.abs(ref))
 
 
 def test_mamba_scan_gpu_supported_config_uses_pallas_scan(monkeypatch):
@@ -567,13 +570,13 @@ def test_ssd_gpu_supported_config_uses_pallas_kernel(monkeypatch):
     monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
     monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _fake_ssd)
 
-    out = ssd(q, k, v, log_alpha)
+    out = ssd(q, k, v, log_alpha, implementation="pallas")
 
     assert out.shape == v.shape
     assert jnp.all(out == 5.0)
 
 
-def test_ssd_gpu_unsupported_config_raises_without_linear_scan_fallback(monkeypatch):
+def test_ssd_gpu_unsupported_config_pallas_only_raises(monkeypatch):
     batch = 1
     num_groups = 1
     num_heads = 1
@@ -600,8 +603,9 @@ def test_ssd_gpu_unsupported_config_raises_without_linear_scan_fallback(monkeypa
 
     monkeypatch.setattr(ssd_kernel_mod, "ssd_linear_scan", _unexpected_linear_scan)
 
+    # Opt-out of the chunked XLA fallback restores the hard error.
     with pytest.raises(RuntimeError, match="Reference fallback on GPU is disabled"):
-        ssd(q, k, v, log_alpha)
+        ssd(q, k, v, log_alpha, implementation="pallas")
 
 
 def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch):
@@ -636,4 +640,4 @@ def test_ssd_gpu_kernel_failure_raises_without_linear_scan_fallback(monkeypatch)
     monkeypatch.setattr(ssd_kernel_mod, "_ssd_op", _failing_ssd)
 
     with pytest.raises(RuntimeError, match="pallas launch failed"):
-        ssd(q, k, v, log_alpha)
+        ssd(q, k, v, log_alpha, implementation="pallas")

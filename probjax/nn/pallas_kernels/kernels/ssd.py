@@ -28,7 +28,7 @@ and the original implementation.
 """
 
 import functools
-from typing import Optional, Tuple, Union
+from typing import Literal, Optional, Tuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -61,13 +61,19 @@ from ..kernel_utils.kernel_primitive import (
     res,
     shardable_kernel,
 )
+from .ssd_xla import ssd_chunked
 
 
-def _ssd_tiling_config() -> tuple[int, int, int]:
+def _ssd_tiling_config(seq_len: int | None = None) -> tuple[int, int, int]:
     """Returns (singleton_dim, chunk_size, subchunk_size) for the current backend."""
     if jax.default_backend() == "gpu":
         # Triton path: reduce tile sizes to satisfy shared-memory limits on common GPUs.
-        return 64, 256, 64
+        # The kernels carry the state across the chunk grid axis through an
+        # output ref, which relies on the TPU's sequential grid execution. Triton
+        # runs grid programs concurrently, so on GPU the whole sequence must be a
+        # single chunk (the state is then carried in registers by the in-kernel
+        # loop over subchunks).
+        return 64, (seq_len if seq_len else 256), 64
     # TPU-tuned defaults.
     return 128, 512, 64
 
@@ -89,12 +95,10 @@ def _gpu_supports_ssd_pallas_for_shape(
         return False
     if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
         return False
-    if pallas_backend == "triton" and num_heads < 2:
-        return False
     if seq_len <= 0 or num_groups <= 0 or num_heads <= 0 or dk <= 0 or dv <= 0:
         return False
-    singleton_dim, chunk_size, _ = _ssd_tiling_config()
-    if seq_len % chunk_size != 0:
+    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config(seq_len)
+    if seq_len % chunk_size != 0 or chunk_size % subchunk_size != 0:
         return False
     if dk % singleton_dim != 0 or dv % singleton_dim != 0:
         return False
@@ -342,7 +346,7 @@ def _ssd_forward(
     """
     bs, num_qk_heads, seq_len, k_head_dim = q.shape
     _, num_v_heads, _, v_head_dim = v.shape
-    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config()
+    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config(seq_len)
     _acc_dtype, orig_dtype = jnp.float32, q.dtype
 
     assert seq_len % chunk_size == 0 and chunk_size % subchunk_size == 0
@@ -865,8 +869,8 @@ def _ssd_backward_impl(
     Returns:
         (dq, dk, dv, dlog_alpha, dinitial_state)
     """
-    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config()
     seq_len = q.shape[2]
+    singleton_dim, chunk_size, subchunk_size = _ssd_tiling_config(seq_len)
     chunk_dim = seq_len // chunk_size
     subchunk_dim = chunk_size // subchunk_size
 
@@ -1027,6 +1031,8 @@ def ssd(
     v: jax.Array,
     log_alpha: jax.Array,
     h0: Optional[jax.Array] = None,
+    *,
+    implementation: Optional[Literal["pallas", "xla"]] = None,
 ) -> jax.Array:
     """Differentiable function that computes the output of SSD.
 
@@ -1038,9 +1044,22 @@ def ssd(
     Args:
         q: [batch_size, num_groups, seq_len, dk]
         k: [batch_size, num_groups, seq_len, dk]
-        v: [batch_size, num_groups, seq_len, dv]
+        v: [batch_size, num_heads, seq_len, dv]
         log_alpha: [batch_size, num_heads, seq_len]
         h0: [batch_size, num_heads, dk, dv]
+        implementation: ``None`` (auto), ``"pallas"`` or ``"xla"``.
+
+            * auto: the Pallas kernel on TPU; everywhere else the pure-JAX
+              chunked algorithm
+              :func:`~probjax.nn.pallas_kernels.kernels.ssd_xla.ssd_chunked`
+              (any shape). On GPU it is faster than the Triton kernel for all
+              benchmarked shapes (RTX 3090: 1.2-1.4x forward, 1.4-2x
+              forward+backward) and exact fp32 instead of TF32; see
+              ``docs/benchmarks/kernel_ssd_gpu.json``.
+            * ``"pallas"``: require the Pallas kernel; raises on CPU and for
+              GPU shapes the Triton kernel does not support (``seq_len % 64``,
+              ``dk % 64`` or ``dv % 64`` nonzero).
+            * ``"xla"``: always use the chunked pure-JAX implementation.
 
     Returns:
         output: [batch_size, num_heads, seq_len, dv]
@@ -1049,20 +1068,25 @@ def ssd(
     multi-value attention) -- one group of q/k corresponds to multiple v heads.
     """
     _validate_ssd_runtime_inputs(q, k, v, log_alpha, h0)
+    if implementation not in (None, "pallas", "xla"):
+        raise ValueError(
+            f"implementation must be None, 'pallas' or 'xla', got {implementation!r}."
+        )
 
     bs, ng, _, dk = q.shape
     _, nh, _, dv = v.shape
     backend = jax.default_backend()
-    pallas_backend = _pallas_backend()
+    if implementation == "xla" or (implementation is None and backend != "tpu"):
+        return ssd_chunked(q, k, v, log_alpha, h0)
     if backend == "cpu":
-        raise RuntimeError("ssd requires an accelerator backend.")
-
-    if h0 is None:
-        h0 = jnp.zeros((bs, nh, dk, dv), dtype=jnp.float32)
-
+        raise RuntimeError(
+            "ssd(implementation='pallas') requires an accelerator backend; "
+            "use implementation=None or 'xla' on CPU."
+        )
     if backend not in ("tpu", "gpu"):
         raise RuntimeError(f"ssd only supports TPU and GPU backends, got {backend!r}.")
 
+    pallas_backend = _pallas_backend()
     if backend == "gpu" and not _gpu_supports_ssd_pallas_for_shape(
         seq_len=q.shape[2],
         num_groups=ng,
@@ -1075,9 +1099,12 @@ def ssd(
             "ssd does not support this GPU Pallas configuration. "
             f"backend={pallas_backend!r}, seq_len={q.shape[2]}, num_groups={ng}, "
             f"num_heads={nh}, dk={dk}, dv={dv}. "
-            "Reference fallback on GPU is disabled."
+            "Reference fallback on GPU is disabled for implementation='pallas'; "
+            "use implementation=None or 'xla' for the chunked XLA path."
         )
 
+    if h0 is None:
+        h0 = jnp.zeros((bs, nh, dk, dv), dtype=jnp.float32)
     return _ssd_op(q, k, v, log_alpha, h0)
 
 
