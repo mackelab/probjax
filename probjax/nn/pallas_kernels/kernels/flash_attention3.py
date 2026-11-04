@@ -27,28 +27,28 @@ except Exception:  # pragma: no cover - depends on local jax build
     cuda_versions = None
 
 if TYPE_CHECKING:
-    from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels import attention_mgpu as _attention_mgpu
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         TuningConfig,
     )
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         attention as _attention_impl,
     )
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
     )
 
     _FLASH3_IMPORT_ERROR: Exception | None = None
 else:
     try:
-        from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels import attention_mgpu as _attention_mgpu
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             TuningConfig,
         )
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             attention as _attention_impl,
         )
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
         )
 
@@ -135,23 +135,25 @@ def _ensure_flash3_supported(*, causal: bool, use_pipeline_emitter: bool) -> Non
 # per primitive) plus the backward; sharding rules, validation, batching and
 # abstract eval all derive from the specs.
 
+# Queries and keys have their own sequence and head factors: the Mosaic kernel
+# takes Lq != Lkv (cross-attention) and fewer K/V heads (GQA/MQA).
 _FLASH_FWD_SPEC = KernelSpec(
     name="flash3_fwd",
     operands=(
-        Operand("q", ("batch", "seq", "heads", "head_dim")),
-        Operand("k", ("batch", "seq", "heads", "head_dim")),
-        Operand("v", ("batch", "seq", "heads", "head_dim")),
+        Operand("q", ("batch", "q_seq", "heads", "head_dim")),
+        Operand("k", ("batch", "kv_seq", "kv_heads", "head_dim")),
+        Operand("v", ("batch", "kv_seq", "kv_heads", "head_dim")),
     ),
-    outputs=(Output(("batch", "seq", "heads", "head_dim"), dtype_like="q"),),
-    shardable=frozenset({"batch", "heads"}),
+    outputs=(Output(("batch", "q_seq", "heads", "head_dim"), dtype_like="q"),),
+    shardable=frozenset({"batch", "heads", "kv_heads"}),
 )
 
 _FLASH_FWD_RES_SPEC = KernelSpec(
     name="flash3_fwd_res",
     operands=_FLASH_FWD_SPEC.operands,
     outputs=(
-        Output(("batch", "seq", "heads", "head_dim"), dtype_like="q"),
-        Output(("batch", "heads", "seq"), dtype_like=jnp.float32),
+        Output(("batch", "q_seq", "heads", "head_dim"), dtype_like="q"),
+        Output(("batch", "heads", "q_seq"), dtype_like=jnp.float32),
     ),
     shardable=_FLASH_FWD_SPEC.shardable,
 )
@@ -340,13 +342,13 @@ def mha_flash(
     module=None,
     sm_scale: float | None = None,
     enable_gqa: bool = False,
-    block_q: int = 128,
-    block_k: int = 128,
+    block_q: int | None = None,
+    block_k: int | None = None,
     block_kv: int | None = None,
     max_concurrent_steps: int = 2,
     use_schedule_barrier: bool = True,
     causal: bool = False,
-    compute_wgs_bwd: int = 1,
+    compute_wgs_bwd: int | None = None,
     block_q_dkv: int | None = None,
     block_kv_dkv: int | None = None,
     block_q_dq: int | None = None,
@@ -419,16 +421,36 @@ def mha_flash(
             f"Expected Hq to be divisible by Hkv for GQA, got Hq={query.shape[-2]}, Hkv={key.shape[-2]}.",
         )
 
+    # Tiles: when the caller sets none, use the configuration tuned on H100
+    # (bf16, head_dim <= 128; docs/benchmarks/gpu_attention_h100.json): 64 x 128
+    # forward tiles, backward dK/dV 128 x 64 and dQ 64 x 128 with two compute
+    # warpgroups -- 2.4-4.1x faster fwd+bwd than 128 x 128 / one warpgroup, and
+    # within 8-17% of cuDNN.  Deeper pipelines or 128 x 128 tiles with two
+    # warpgroups exceed the 227 KB of shared memory at head_dim 128.
+    untuned = (block_q, block_k, block_kv, compute_wgs_bwd, block_q_dkv, block_kv_dkv,
+               block_q_dq, block_kv_dq)
+    if all(x is None for x in untuned) and query.shape[-1] <= 128:
+        block_q, block_kv, compute_wgs_bwd = 64, 128, 2
+        block_q_dkv, block_kv_dkv, block_q_dq, block_kv_dq = 128, 64, 64, 128
+    block_q = 128 if block_q is None else block_q
+    block_k = 128 if block_k is None else block_k
+    compute_wgs_bwd = 1 if compute_wgs_bwd is None else compute_wgs_bwd
     block_kv = block_k if block_kv is None else block_kv
     q_len = query.shape[1]
     kv_len = key.shape[1]
+    head_dim = query.shape[-1]
     q_multiple = block_q if use_pipeline_emitter else (2 * block_q)
-    if q_len % q_multiple:
-        raise ValueError(
-            f"{q_len=} must be a multiple of {q_multiple=} for this kernel."
-        )
     if kv_len % block_kv:
-        raise ValueError(f"{kv_len=} must be a multiple of {block_kv=}.")
+        # Padding keys would change the softmax without an in-kernel KV mask.
+        raise NotImplementedError(
+            f"{kv_len=} must be a multiple of {block_kv=} (padded keys need a KV-length mask)."
+        )
+    q_pad = -q_len % q_multiple
+    if q_pad and causal:
+        raise NotImplementedError(
+            f"causal mha_flash needs {q_len=} to be a multiple of {q_multiple=}."
+        )
+    d_pad = -head_dim % 64
 
     if (
         block_q_dkv is None
@@ -442,8 +464,15 @@ def mha_flash(
         block_kv_dq = block_kv
 
     if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(query.shape[-1])
+        sm_scale = 1.0 / math.sqrt(head_dim)
     query = query * jnp.asarray(sm_scale, dtype=query.dtype)
+    # Exact padding: extra query rows are sliced off; zero head-dim columns add
+    # nothing to q.k and their (zero) value columns are sliced off.
+    if q_pad or d_pad:
+        query = jnp.pad(query, ((0, 0), (0, q_pad), (0, 0), (0, d_pad)))
+    if d_pad:
+        key = jnp.pad(key, ((0, 0), (0, 0), (0, 0), (0, d_pad)))
+        value = jnp.pad(value, ((0, 0), (0, 0), (0, 0), (0, d_pad)))
 
     config = TuningConfig(
         block_q=block_q,
@@ -476,9 +505,14 @@ def mha_flash(
         )
     )
 
+    if save_residuals:
+        out_value, residuals = out
+        out_value = out_value[:, :q_len, :, :head_dim]
+        residuals = tuple(r[..., :q_len] for r in residuals)  # lse: (B, H, Lq)
+    else:
+        out_value, residuals = out[:, :q_len, :, :head_dim], None
+
     if added_batch_dim:
-        if save_residuals:
-            out_value, residuals = out
-            return out_value[0], tuple(r[0] for r in residuals)
-        return out[0]
-    return out
+        out_value = out_value[0]
+        residuals = None if residuals is None else tuple(r[0] for r in residuals)
+    return (out_value, residuals) if save_residuals else out_value
