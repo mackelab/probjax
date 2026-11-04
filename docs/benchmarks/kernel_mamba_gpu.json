@@ -1,0 +1,1627 @@
+{
+  "device": {
+    "jax": "0.11.2",
+    "backend": "gpu",
+    "devices": [
+      "cuda:0"
+    ],
+    "python": "3.14.8",
+    "device_kind": "NVIDIA GeForce RTX 3090",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "driver": "615.78.08",
+    "gpu_memory_gb": 24.0,
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0"
+  },
+  "config": {
+    "batch": 4,
+    "state": 16,
+    "dtype": "float32",
+    "gpu_scan_config": {
+      "fwd": {
+        "chunk": 8,
+        "dim_block": 32,
+        "num_warps": 2,
+        "segment": 256
+      },
+      "bwd": {
+        "chunk": 4,
+        "dim_block": 32,
+        "num_warps": 2,
+        "segment": 256
+      }
+    },
+    "note": "rel_err = max|out-scan| / max|scan| (max over y or all grads)",
+    "note_runs": "assoc = old GPU compute_mamba_scan path for all multi-tile shapes; pallas = new GPU path; device_peak rows from fresh subprocesses; max_len = largest power-of-two L (B=4, D=1024, fwd+bwd) that ran on the shared 24 GB RTX 3090"
+  },
+  "results": [
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 4.31,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.004708745997049846,
+      "inner": 14,
+      "median_ms": 3.5174815004990836,
+      "q1_ms": 3.5124241434719545,
+      "q3_ms": 3.541157000914349
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 22.75,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.0012059889995725825,
+      "inner": 151,
+      "median_ms": 0.24455206623664805,
+      "q1_ms": 0.24418587422858776,
+      "q3_ms": 0.24772693371455748,
+      "rel_err_vs_scan": 1.4328124604144854e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 8.88,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.0020933949999744073,
+      "inner": 76,
+      "median_ms": 0.5366925920258693,
+      "q1_ms": 0.5350474999240281,
+      "q3_ms": 0.5427996446470436,
+      "rel_err_vs_scan": 1.563068138633984e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 0.56,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.0015145420038606972,
+      "inner": 178,
+      "median_ms": 0.1712749662954266,
+      "q1_ms": 0.17116656180293288,
+      "q3_ms": 0.17157328652552842,
+      "rel_err_vs_scan": 3.256391955487467e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 168.19,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.01879339299921412,
+      "inner": 3,
+      "median_ms": 13.888280334261557,
+      "q1_ms": 13.883411336185722,
+      "q3_ms": 13.890241001111766
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 110.0,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.0033063669980037957,
+      "inner": 36,
+      "median_ms": 1.2880636386398692,
+      "q1_ms": 1.287102111139878,
+      "q3_ms": 1.2937777501065284,
+      "rel_err_vs_scan": 2.8652298221306257e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 19.98,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.004558240994811058,
+      "inner": 21,
+      "median_ms": 2.06839133309023,
+      "q1_ms": 1.9324669521579163,
+      "q3_ms": 2.0684251905463285,
+      "rel_err_vs_scan": 2.797010064460849e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 12.25,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.0021458739938680083,
+      "inner": 62,
+      "median_ms": 0.6749289032379766,
+      "q1_ms": 0.6745503062941884,
+      "q3_ms": 0.6751000485476857,
+      "rel_err_vs_scan": 4.006152993151424e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 17.06,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.014612245009629987,
+      "inner": 3,
+      "median_ms": 13.646330000483431,
+      "q1_ms": 13.483335666630106,
+      "q3_ms": 13.751698997414982
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 136.0,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.002356141005293466,
+      "inner": 35,
+      "median_ms": 1.3034750283363143,
+      "q1_ms": 1.3033579714829102,
+      "q3_ms": 1.3035903996621658,
+      "rel_err_vs_scan": 1.3625072167465581e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 21.66,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.0034964649967150763,
+      "inner": 21,
+      "median_ms": 2.152334190517043,
+      "q1_ms": 2.1458882381141717,
+      "q3_ms": 2.1557420474155586,
+      "rel_err_vs_scan": 1.3625072167465581e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 2.06,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.001278265001019463,
+      "inner": 143,
+      "median_ms": 0.2614358531423499,
+      "q1_ms": 0.2612861258407625,
+      "q3_ms": 0.26149274126001326,
+      "rel_err_vs_scan": 5.472737320598674e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 672.57,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.0715987919975305,
+      "inner": 1,
+      "median_ms": 55.30466999334749,
+      "q1_ms": 55.234265004401095,
+      "q3_ms": 55.36903100437485
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 535.82,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.007577655007480644,
+      "inner": 8,
+      "median_ms": 5.6323003736906685,
+      "q1_ms": 5.627029126117122,
+      "q3_ms": 5.636086250888184,
+      "rel_err_vs_scan": 2.737625395464654e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 40.26,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.010731935006333515,
+      "inner": 5,
+      "median_ms": 8.284995800931938,
+      "q1_ms": 8.274303399957716,
+      "q3_ms": 8.292263399926014,
+      "rel_err_vs_scan": 2.9331700665692724e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 49.0,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.002583431007224135,
+      "inner": 46,
+      "median_ms": 0.9963091522323616,
+      "q1_ms": 0.9958746086340398,
+      "q3_ms": 0.9974785435074212,
+      "rel_err_vs_scan": 1.309725522300192e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 68.06,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.0573386829928495,
+      "inner": 1,
+      "median_ms": 55.64578300982248,
+      "q1_ms": 55.58582099911291,
+      "q3_ms": 55.67542900098488
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 544.0,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.006656154990196228,
+      "inner": 6,
+      "median_ms": 5.398703998556205,
+      "q1_ms": 5.397626999183558,
+      "q3_ms": 5.417047000567739,
+      "rel_err_vs_scan": 3.381871206247773e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 72.66,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.009813600001507439,
+      "inner": 5,
+      "median_ms": 8.597864798502997,
+      "q1_ms": 8.57243080099579,
+      "q3_ms": 8.607599200331606,
+      "rel_err_vs_scan": 3.381871206247773e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 8.06,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.0017456969944760203,
+      "inner": 61,
+      "median_ms": 0.7304486228901221,
+      "q1_ms": 0.7291417213473621,
+      "q3_ms": 0.7309541640589472,
+      "rel_err_vs_scan": 2.3477990489527808e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 2690.07,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 0.2801369429944316,
+      "inner": 1,
+      "median_ms": 222.30912699887995,
+      "q1_ms": 222.27631499117706,
+      "q3_ms": 222.3229629889829
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 2145.88,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 0.04184286799863912,
+      "inner": 1,
+      "median_ms": 39.709548000246286,
+      "q1_ms": 39.69301699544303,
+      "q3_ms": 39.87979900557548,
+      "rel_err_vs_scan": 8.24952126746606e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 121.26,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 0.03558381399489008,
+      "inner": 1,
+      "median_ms": 32.9827699897578,
+      "q1_ms": 32.809753000037745,
+      "q3_ms": 32.99300900835078,
+      "rel_err_vs_scan": 8.409706146445983e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 196.0,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 0.004335541001637466,
+      "inner": 17,
+      "median_ms": 2.9942207064082407,
+      "q1_ms": 2.988591764519429,
+      "q3_ms": 2.9949302355389054,
+      "rel_err_vs_scan": 7.248365773841537e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 8.38,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.005096477994811721,
+      "inner": 13,
+      "median_ms": 3.5184276146957507,
+      "q1_ms": 3.5061729230129948,
+      "q3_ms": 3.5221153845598634
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 37.0,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.0024837909877533093,
+      "inner": 72,
+      "median_ms": 0.6024038749375097,
+      "q1_ms": 0.5978541527535223,
+      "q3_ms": 0.6040049583033477,
+      "rel_err_vs_scan": 6.454261873235318e-07
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 17.88,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.0027263899974059314,
+      "inner": 40,
+      "median_ms": 1.2270543498743791,
+      "q1_ms": 1.215685124770971,
+      "q3_ms": 1.233874974786886,
+      "rel_err_vs_scan": 6.950743555791881e-07
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 0.88,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.001395095998304896,
+      "inner": 150,
+      "median_ms": 0.2008612000887903,
+      "q1_ms": 0.19907602002300942,
+      "q3_ms": 0.2019119734177366,
+      "rel_err_vs_scan": 2.606528833421955e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 336.26,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.024479996995069087,
+      "inner": 3,
+      "median_ms": 16.031702999801684,
+      "q1_ms": 15.96232200002608,
+      "q3_ms": 16.21026700013317
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 172.0,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.005418977001681924,
+      "inner": 13,
+      "median_ms": 3.5660985393825775,
+      "q1_ms": 3.5659851542172527,
+      "q3_ms": 3.5773928460772506,
+      "rel_err_vs_scan": 1.3140523886406304e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 39.04,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.006169025000417605,
+      "inner": 12,
+      "median_ms": 3.9215041664040955,
+      "q1_ms": 3.88432816665348,
+      "q3_ms": 3.9378182494450202,
+      "rel_err_vs_scan": 1.359787546793689e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 24.5,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.002272122001159005,
+      "inner": 57,
+      "median_ms": 0.777106333356514,
+      "q1_ms": 0.7566800175067201,
+      "q3_ms": 0.7973006138120565,
+      "rel_err_vs_scan": 6.017128357582695e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 33.13,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.015741959010483697,
+      "inner": 3,
+      "median_ms": 13.751171330416886,
+      "q1_ms": 13.738503999775276,
+      "q3_ms": 13.765441666085584
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 272.0,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.0036799619992962107,
+      "inner": 18,
+      "median_ms": 2.7349929999521314,
+      "q1_ms": 2.7248883327249334,
+      "q3_ms": 2.7821665005629055,
+      "rel_err_vs_scan": 3.233457228636144e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 42.66,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.005988061995594762,
+      "inner": 10,
+      "median_ms": 4.956191999372095,
+      "q1_ms": 4.772737399616744,
+      "q3_ms": 4.956399400543887,
+      "rel_err_vs_scan": 3.198310954411838e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 3.13,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.0015231979923555627,
+      "inner": 100,
+      "median_ms": 0.39388431003317237,
+      "q1_ms": 0.39368404002743773,
+      "q3_ms": 0.39406024996424094,
+      "rel_err_vs_scan": 1.0825052461086221e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 1344.63,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 0.09746897500008345,
+      "inner": 1,
+      "median_ms": 63.39832999219652,
+      "q1_ms": 63.113190000876784,
+      "q3_ms": 64.046193001559
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 1023.63,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 0.013668811996467412,
+      "inner": 4,
+      "median_ms": 11.772898247727426,
+      "q1_ms": 11.710237500665244,
+      "q3_ms": 11.779250500694616,
+      "rel_err_vs_scan": 8.100115811405813e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 78.82,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 0.019141461001709104,
+      "inner": 3,
+      "median_ms": 16.042433334708523,
+      "q1_ms": 15.599880663406415,
+      "q3_ms": 17.563650665882353,
+      "rel_err_vs_scan": 7.998864363763241e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 98.0,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 0.0031579859933117405,
+      "inner": 31,
+      "median_ms": 1.4943320641196483,
+      "q1_ms": 1.4935761292074476,
+      "q3_ms": 1.4970675481656086,
+      "rel_err_vs_scan": 2.0887527489918683e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 132.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.0569215239956975,
+      "inner": 1,
+      "median_ms": 55.1135479909135,
+      "q1_ms": 54.747947011492215,
+      "q3_ms": 55.54764799308032
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 1088.0,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.012227650004206225,
+      "inner": 4,
+      "median_ms": 10.740903748228448,
+      "q1_ms": 10.740237499703653,
+      "q3_ms": 10.761094497865997,
+      "rel_err_vs_scan": 1.1007589915837324e-05
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 141.66,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.02022082099574618,
+      "inner": 2,
+      "median_ms": 19.261422501585912,
+      "q1_ms": 19.23126650217455,
+      "q3_ms": 19.26368749991525,
+      "rel_err_vs_scan": 1.1007589915837324e-05
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 12.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.0025038700114237145,
+      "inner": 37,
+      "median_ms": 1.3166451893551778,
+      "q1_ms": 1.3104537840164896,
+      "q3_ms": 1.3383107296839305,
+      "rel_err_vs_scan": 3.933517913052769e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 5378.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 0.3684198139962973,
+      "inner": 1,
+      "median_ms": 255.43774200195912,
+      "q1_ms": 251.16951900417916,
+      "q3_ms": 266.4583520090673
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 4031.76,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 0.07492762099718675,
+      "inner": 1,
+      "median_ms": 75.53465700766537,
+      "q1_ms": 75.01646800665185,
+      "q3_ms": 84.63277500413824,
+      "rel_err_vs_scan": 2.358299483494376e-05
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 237.82,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 0.07242253799631726,
+      "inner": 1,
+      "median_ms": 65.57250699552242,
+      "q1_ms": 64.81841200729832,
+      "q3_ms": 69.56541001272853,
+      "rel_err_vs_scan": 2.3678087556052404e-05
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 392.0,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 0.006267160002607852,
+      "inner": 10,
+      "median_ms": 5.072951701004058,
+      "q1_ms": 5.033773499599192,
+      "q3_ms": 5.162088001088705,
+      "rel_err_vs_scan": 7.778584586687095e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 16.5,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.004741501004900783,
+      "inner": 13,
+      "median_ms": 3.5148920007766438,
+      "q1_ms": 3.512118308348223,
+      "q3_ms": 3.5370040770011166
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 136.0,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.005753133009420708,
+      "inner": 33,
+      "median_ms": 1.4587525149567449,
+      "q1_ms": 1.4399567576633259,
+      "q3_ms": 1.4670980608295368,
+      "rel_err_vs_scan": 1.833568121731321e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 33.75,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.004220930990413763,
+      "inner": 18,
+      "median_ms": 2.535936499447821,
+      "q1_ms": 2.533903777980918,
+      "q3_ms": 2.5391804447281174,
+      "rel_err_vs_scan": 1.650211309558189e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 1.5,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.0012904019968118519,
+      "inner": 135,
+      "median_ms": 0.23318491854566942,
+      "q1_ms": 0.23219785933313822,
+      "q3_ms": 0.2332743481491451,
+      "rel_err_vs_scan": 2.2919601521641513e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 672.38,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.03286541700072121,
+      "inner": 2,
+      "median_ms": 16.93884050473571,
+      "q1_ms": 16.928311000810936,
+      "q3_ms": 16.94719650549814
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 535.5,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.008820833987556398,
+      "inner": 6,
+      "median_ms": 7.14683516707737,
+      "q1_ms": 7.117766668670811,
+      "q3_ms": 7.150772667955607,
+      "rel_err_vs_scan": 3.776916962150149e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 76.04,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.013843027001712471,
+      "inner": 6,
+      "median_ms": 7.754842333573227,
+      "q1_ms": 7.7366543337120675,
+      "q3_ms": 7.760509666695725,
+      "rel_err_vs_scan": 3.183080019846504e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 49.0,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.0025549860001774505,
+      "inner": 52,
+      "median_ms": 0.8778343846922956,
+      "q1_ms": 0.8770160960781281,
+      "q3_ms": 0.8780164616137671,
+      "rel_err_vs_scan": 7.710522318492377e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 65.25,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.016682503002812155,
+      "inner": 3,
+      "median_ms": 13.986910664243624,
+      "q1_ms": 13.97246666601859,
+      "q3_ms": 14.031839333862687
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 544.0,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.006570597004611045,
+      "inner": 8,
+      "median_ms": 5.618477249299758,
+      "q1_ms": 5.606384374914342,
+      "q3_ms": 5.627366750559304,
+      "rel_err_vs_scan": 2.494207927149639e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 82.53,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.013079495998681523,
+      "inner": 4,
+      "median_ms": 9.751028250320815,
+      "q1_ms": 9.74813799984986,
+      "q3_ms": 9.77575774959405,
+      "rel_err_vs_scan": 2.5522127626647466e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 5.25,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.0017497649969300255,
+      "inner": 73,
+      "median_ms": 0.6386634382604277,
+      "q1_ms": 0.6379186026656312,
+      "q3_ms": 0.6397387669868256,
+      "rel_err_vs_scan": 8.46870598520575e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 2688.76,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 0.1254068630078109,
+      "inner": 1,
+      "median_ms": 67.98468799388502,
+      "q1_ms": 67.9755510063842,
+      "q3_ms": 67.9863010009285
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 2047.25,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 0.025357970007462427,
+      "inner": 2,
+      "median_ms": 23.655454504478257,
+      "q1_ms": 23.650350005482323,
+      "q3_ms": 23.783137505233753,
+      "rel_err_vs_scan": 5.743436847082909e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 154.82,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 0.03256256198801566,
+      "inner": 1,
+      "median_ms": 30.993028994998895,
+      "q1_ms": 30.978671013144776,
+      "q3_ms": 31.00353899935726,
+      "rel_err_vs_scan": 5.619433140978696e-06
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 196.0,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 0.003868672007229179,
+      "inner": 20,
+      "median_ms": 2.5259122499846853,
+      "q1_ms": 2.525481399788987,
+      "q3_ms": 2.5330062002467457,
+      "rel_err_vs_scan": 1.884671422666701e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 260.25,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.05797377300041262,
+      "inner": 1,
+      "median_ms": 55.59725599596277,
+      "q1_ms": 55.56688900105655,
+      "q3_ms": 55.68978199153207
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 2176.0,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.02392202100600116,
+      "inner": 2,
+      "median_ms": 23.005625000223517,
+      "q1_ms": 22.82531750097405,
+      "q3_ms": 23.069766502885614,
+      "rel_err_vs_scan": 1.2766374047530442e-05
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 277.53,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.043159821012523025,
+      "inner": 1,
+      "median_ms": 41.23741699731909,
+      "q1_ms": 40.83203698974103,
+      "q3_ms": 41.27873599645682,
+      "rel_err_vs_scan": 1.2804826981408545e-05
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 20.25,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.003117284009931609,
+      "inner": 23,
+      "median_ms": 2.208932173823047,
+      "q1_ms": 2.2074241303767925,
+      "q3_ms": 2.2118368696006336,
+      "rel_err_vs_scan": 4.375943875328206e-05
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "error": "JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 10.50GiB with allocator GPU_0_bfc on device 0. [executable_name='jit_loss'] [tf-allocator-allocation-error='']"
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 8063.51,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 260.07,
+      "compile_s": 0.1495716860081302,
+      "inner": 1,
+      "median_ms": 147.54442300181836,
+      "q1_ms": 147.48944900929928,
+      "q3_ms": 147.556526993867
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 469.82,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 260.07,
+      "compile_s": 0.1268505269981688,
+      "inner": 1,
+      "median_ms": 124.55819999740925,
+      "q1_ms": 124.54490500385873,
+      "q3_ms": 126.00258599559311
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 784.0,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 260.07,
+      "compile_s": 0.012244579003890976,
+      "inner": 4,
+      "median_ms": 9.157718501228373,
+      "q1_ms": 9.12392649843241,
+      "q3_ms": 9.302140249928925
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 113.03369140625
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 452.03369140625
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 1411.16357421875
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 5642.197998046875
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 321.034423828125
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 1284.03466796875
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 1090.532958984375
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 4360.067138671875
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 113.033935546875
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 452.03369140625
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 194.532958984375
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 501.888671875
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 97.096435546875
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 228.533935546875
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 194.532958984375
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "kind": "device_peak",
+      "peak_mb": 776.0673828125
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "kind": "max_len",
+      "shape": {
+        "batch": 4,
+        "dim": 1024,
+        "state": 16
+      },
+      "max_seq": 4096,
+      "peak_mb_at_max": 5638.32568359375,
+      "limit": 262144,
+      "first_failure": "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 10.50GiB with allocator GPU_0_bfc on device 0. [tf-allocator-allocation-error=''] [executable_name='jit_loss']"
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "kind": "max_len",
+      "shape": {
+        "batch": 4,
+        "dim": 1024,
+        "state": 16
+      },
+      "max_seq": 8192,
+      "peak_mb_at_max": 8583.6396484375,
+      "limit": 262144,
+      "first_failure": "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 15.75GiB with allocator GPU_0_bfc on device 0. [tf-allocator-allocation-error=''] [executable_name='jit_loss']"
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "kind": "max_len",
+      "shape": {
+        "batch": 4,
+        "dim": 1024,
+        "state": 16
+      },
+      "max_seq": 65536,
+      "peak_mb_at_max": 7569.955322265625,
+      "limit": 262144,
+      "first_failure": "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 6.61GiB with allocator GPU_0_bfc on device 0. [executable_name='jit_loss'] [tf-allocator-allocation-error='']"
+    },
+    {
+      "impl": "pallas",
+      "mode": "fwd_bwd",
+      "kind": "max_len",
+      "shape": {
+        "batch": 4,
+        "dim": 1024,
+        "state": 16
+      },
+      "max_seq": 65536,
+      "peak_mb_at_max": 10432.13720703125,
+      "limit": 262144,
+      "first_failure": "jax.errors.JaxRuntimeError: RESOURCE_EXHAUSTED: Out of memory while trying to allocate 12.25GiB with allocator GPU_0_bfc on device 0. [tf-allocator-allocation-error=''] [executable_name='jit_loss']"
+    }
+  ]
+}

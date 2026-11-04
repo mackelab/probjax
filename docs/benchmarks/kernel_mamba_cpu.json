@@ -1,0 +1,933 @@
+{
+  "device": {
+    "jax": "0.11.2",
+    "backend": "cpu",
+    "devices": [
+      "cpu:0"
+    ],
+    "python": "3.14.8",
+    "device_kind": "cpu",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "driver": "615.78.08",
+    "gpu_memory_gb": 24.0,
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0"
+  },
+  "config": {
+    "batch": 4,
+    "state": 16,
+    "dtype": "float32",
+    "gpu_scan_config": {
+      "fwd": {
+        "chunk": 8,
+        "dim_block": 32,
+        "num_warps": 2,
+        "segment": 256
+      },
+      "bwd": {
+        "chunk": 4,
+        "dim_block": 32,
+        "num_warps": 2,
+        "segment": 256
+      }
+    },
+    "note": "rel_err = max|out-scan| / max|scan| (max over y or all grads)",
+    "note_runs": "L=512/2048: scan, assoc (old CPU path), chunked (new CPU path); L=8192: scan, chunked (assoc skipped: >1 s/call, GBs of temps)"
+  },
+  "results": [
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 6.44,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.009689918006188236,
+      "inner": 5,
+      "median_ms": 17.204251600196585,
+      "q1_ms": 15.465975599363446,
+      "q3_ms": 20.888299800571986
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 154.75,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.05934769500163384,
+      "inner": 1,
+      "median_ms": 91.11377999943215,
+      "q1_ms": 75.84591099293903,
+      "q3_ms": 107.70476100151427,
+      "rel_err_vs_scan": 9.769193681363681e-07
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 4.32,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 2.0,
+      "compile_s": 0.010827739999513142,
+      "inner": 9,
+      "median_ms": 6.403791556497001,
+      "q1_ms": 6.400141444626367,
+      "q3_ms": 7.0839781110407785,
+      "rel_err_vs_scan": 1.953838736272736e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 140.63,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.19993003399576992,
+      "inner": 1,
+      "median_ms": 173.61884699494112,
+      "q1_ms": 158.28431300178636,
+      "q3_ms": 179.19759900541976
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 412.25,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.1913973249902483,
+      "inner": 1,
+      "median_ms": 231.0855950054247,
+      "q1_ms": 230.98381199815776,
+      "q3_ms": 244.77143099647947,
+      "rel_err_vs_scan": 2.241449709900371e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 12.35,
+      "xla_arg_mb": 4.27,
+      "xla_out_mb": 4.27,
+      "compile_s": 0.04974247700010892,
+      "inner": 1,
+      "median_ms": 41.062549003981985,
+      "q1_ms": 38.76514399598818,
+      "q3_ms": 42.69482700328808,
+      "rel_err_vs_scan": 4.578460039544159e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 25.56,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.022449452997534536,
+      "inner": 1,
+      "median_ms": 28.607942003873177,
+      "q1_ms": 24.871063011232764,
+      "q3_ms": 32.23643499950413
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 628.62,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.2693665019905893,
+      "inner": 1,
+      "median_ms": 320.8980839990545,
+      "q1_ms": 318.5416560008889,
+      "q3_ms": 345.9776710078586,
+      "rel_err_vs_scan": 8.175069290524795e-07
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 17.07,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.03292245201009791,
+      "inner": 1,
+      "median_ms": 21.79338199493941,
+      "q1_ms": 21.775037996121682,
+      "q3_ms": 26.530652001383714,
+      "rel_err_vs_scan": 2.7250230968415984e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 561.75,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.5706759540044004,
+      "inner": 1,
+      "median_ms": 700.5470730073284,
+      "q1_ms": 667.4536080099642,
+      "q3_ms": 760.5433950084262
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 1659.88,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.8910718279948924,
+      "inner": 1,
+      "median_ms": 1105.7702459947905,
+      "q1_ms": 1003.8846010138514,
+      "q3_ms": 1196.0321249935078,
+      "rel_err_vs_scan": 2.542124137657717e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 37.06,
+      "xla_arg_mb": 17.02,
+      "xla_out_mb": 17.02,
+      "compile_s": 0.2549233839963563,
+      "inner": 1,
+      "median_ms": 235.83676099951845,
+      "q1_ms": 227.4143500108039,
+      "q3_ms": 250.6880720029585,
+      "rel_err_vs_scan": 1.0364037687441179e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 12.5,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.014288196005509235,
+      "inner": 3,
+      "median_ms": 14.209370332537219,
+      "q1_ms": 13.962373001656184,
+      "q3_ms": 17.326860334530163
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 309.5,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.2058927530015353,
+      "inner": 1,
+      "median_ms": 221.20946399809327,
+      "q1_ms": 201.07144299254287,
+      "q3_ms": 222.12000600120518,
+      "rel_err_vs_scan": 6.950757359486716e-07
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 8.38,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 4.0,
+      "compile_s": 0.02082797500770539,
+      "inner": 3,
+      "median_ms": 14.482085995647745,
+      "q1_ms": 13.671763333453177,
+      "q3_ms": 16.287500999169424,
+      "rel_err_vs_scan": 1.9859306741390619e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 280.88,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.41405617000418715,
+      "inner": 1,
+      "median_ms": 369.08466699242126,
+      "q1_ms": 314.853960997425,
+      "q3_ms": 380.35190899972804
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 824.75,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.4211641359870555,
+      "inner": 1,
+      "median_ms": 520.3994670009706,
+      "q1_ms": 491.3945650041569,
+      "q3_ms": 570.81126900448,
+      "rel_err_vs_scan": 1.3870605646124932e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 24.42,
+      "xla_arg_mb": 8.28,
+      "xla_out_mb": 8.28,
+      "compile_s": 0.10224272999039385,
+      "inner": 1,
+      "median_ms": 84.7064510016935,
+      "q1_ms": 82.13821299432311,
+      "q3_ms": 85.43493901379406,
+      "rel_err_vs_scan": 6.621328773224207e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 49.63,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.05995810999593232,
+      "inner": 1,
+      "median_ms": 56.863566001993604,
+      "q1_ms": 55.287245006184094,
+      "q3_ms": 57.483709999360144
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 1257.25,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.5417172190063866,
+      "inner": 1,
+      "median_ms": 660.726322006667,
+      "q1_ms": 657.4551859957865,
+      "q3_ms": 690.6180530058919,
+      "rel_err_vs_scan": 3.5849348385373464e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 33.13,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 16.0,
+      "compile_s": 0.08479705199715681,
+      "inner": 1,
+      "median_ms": 92.15728400158696,
+      "q1_ms": 66.6553670016583,
+      "q3_ms": 94.30312299809884,
+      "rel_err_vs_scan": 2.1087851991396157e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 1122.0,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 2.0213272380060516,
+      "inner": 1,
+      "median_ms": 1934.2315880057868,
+      "q1_ms": 1693.4598709922284,
+      "q3_ms": 1963.7602300063008
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 3320.25,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 2.729117740993388,
+      "inner": 1,
+      "median_ms": 1922.948034000001,
+      "q1_ms": 1908.7058750010328,
+      "q3_ms": 1945.5973749863915,
+      "rel_err_vs_scan": 7.848625022637469e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 73.13,
+      "xla_arg_mb": 33.03,
+      "xla_out_mb": 33.03,
+      "compile_s": 0.35993036298896186,
+      "inner": 1,
+      "median_ms": 383.1024519895436,
+      "q1_ms": 375.1365049974993,
+      "q3_ms": 386.53283000166994,
+      "rel_err_vs_scan": 1.5317461648300762e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 24.63,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.018939974994282238,
+      "inner": 1,
+      "median_ms": 20.81669399922248,
+      "q1_ms": 17.309150003711693,
+      "q3_ms": 22.464501002104953
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 619.0,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.2276308399887057,
+      "inner": 1,
+      "median_ms": 294.88280600344297,
+      "q1_ms": 293.148465003469,
+      "q3_ms": 309.1457039990928,
+      "rel_err_vs_scan": 1.3751805039009746e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 16.53,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 8.0,
+      "compile_s": 0.0206656790105626,
+      "inner": 1,
+      "median_ms": 16.605287994025275,
+      "q1_ms": 15.792079997481778,
+      "q3_ms": 18.72152199211996,
+      "rel_err_vs_scan": 2.2919675065016243e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 561.38,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.5870103899942478,
+      "inner": 1,
+      "median_ms": 587.1023850049824,
+      "q1_ms": 579.4482769997558,
+      "q3_ms": 618.4759179886896
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 1649.5,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.7644394840026507,
+      "inner": 1,
+      "median_ms": 894.4325240008766,
+      "q1_ms": 889.2906080000103,
+      "q3_ms": 949.9269009975251,
+      "rel_err_vs_scan": 3.3506950394587423e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 512,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 48.33,
+      "xla_arg_mb": 16.32,
+      "xla_out_mb": 16.32,
+      "compile_s": 0.169136469005025,
+      "inner": 1,
+      "median_ms": 215.75197100173682,
+      "q1_ms": 191.31798499438446,
+      "q3_ms": 217.1031969919568,
+      "rel_err_vs_scan": 9.094743678530871e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 97.75,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.19263618900731672,
+      "inner": 1,
+      "median_ms": 176.12619999272283,
+      "q1_ms": 158.78040000097826,
+      "q3_ms": 220.33923800336197
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 2514.5,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 1.6039788900088752,
+      "inner": 1,
+      "median_ms": 1275.4183530050796,
+      "q1_ms": 1268.0409489985323,
+      "q3_ms": 1299.714838998625,
+      "rel_err_vs_scan": 3.1322916414101483e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 65.28,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.0897865900042234,
+      "inner": 1,
+      "median_ms": 95.42950300965458,
+      "q1_ms": 89.68073899450246,
+      "q3_ms": 97.99504600232467,
+      "rel_err_vs_scan": 2.90027003834273e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 2242.5,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 4.018095270002959,
+      "inner": 1,
+      "median_ms": 2676.767712007859,
+      "q1_ms": 2620.41582299571,
+      "q3_ms": 3379.0462499891873
+    },
+    {
+      "impl": "assoc",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 6641.0,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 4.853613398998277,
+      "inner": 1,
+      "median_ms": 3648.4959699882893,
+      "q1_ms": 3634.996805994888,
+      "q3_ms": 4181.5430099959485,
+      "rel_err_vs_scan": 7.019930412068001e-06
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 2048,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 145.25,
+      "xla_arg_mb": 65.07,
+      "xla_out_mb": 65.07,
+      "compile_s": 0.5500461729970993,
+      "inner": 1,
+      "median_ms": 567.6055170042673,
+      "q1_ms": 531.840337003814,
+      "q3_ms": 612.6974569924641,
+      "rel_err_vs_scan": 1.2763509840123638e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 102.06,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.09751452700584196,
+      "inner": 1,
+      "median_ms": 120.32592500327155,
+      "q1_ms": 117.81645800510887,
+      "q3_ms": 120.3436435025651
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 68.07,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 32.0,
+      "compile_s": 0.10264531199936755,
+      "inner": 1,
+      "median_ms": 107.37162199802697,
+      "q1_ms": 105.2104690024862,
+      "q3_ms": 110.31194849783788,
+      "rel_err_vs_scan": 1.9511148182292658e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 2246.25,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 2.4089376960037043,
+      "inner": 1,
+      "median_ms": 2619.4926769967424,
+      "q1_ms": 2614.1816709932755,
+      "q3_ms": 2658.712836499035
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 256,
+        "state": 16
+      },
+      "xla_temp_mb": 148.06,
+      "xla_arg_mb": 68.02,
+      "xla_out_mb": 68.02,
+      "compile_s": 2.864437516007456,
+      "inner": 1,
+      "median_ms": 644.8948080069385,
+      "q1_ms": 643.6932155047543,
+      "q3_ms": 647.9788165088394,
+      "rel_err_vs_scan": 2.81342227498952e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 198.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.2003437569946982,
+      "inner": 1,
+      "median_ms": 231.7920319910627,
+      "q1_ms": 231.6369879990816,
+      "q3_ms": 231.8400619988097
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 132.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 64.0,
+      "compile_s": 0.2136639519885648,
+      "inner": 1,
+      "median_ms": 205.45388301252387,
+      "q1_ms": 203.40230250440072,
+      "q3_ms": 208.48090350773418,
+      "rel_err_vs_scan": 4.173523417848574e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 4486.5,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 4.71078161499463,
+      "inner": 1,
+      "median_ms": 5166.115701998933,
+      "q1_ms": 5008.789671999693,
+      "q3_ms": 5379.218928501359
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 512,
+        "state": 16
+      },
+      "xla_temp_mb": 292.13,
+      "xla_arg_mb": 132.03,
+      "xla_out_mb": 132.03,
+      "compile_s": 6.11144452598819,
+      "inner": 1,
+      "median_ms": 1037.0018319954397,
+      "q1_ms": 1013.5817134942045,
+      "q3_ms": 1042.2516364997136,
+      "rel_err_vs_scan": 2.7209669636347017e-06
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 390.25,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.2676025859982474,
+      "inner": 1,
+      "median_ms": 319.0699459955795,
+      "q1_ms": 315.29914799466496,
+      "q3_ms": 320.49866300076246
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 260.28,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 128.0,
+      "compile_s": 0.38072786999691743,
+      "inner": 1,
+      "median_ms": 298.87558800692204,
+      "q1_ms": 289.2180060080136,
+      "q3_ms": 299.0108490048442,
+      "rel_err_vs_scan": 3.0763279257897415e-07
+    },
+    {
+      "impl": "scan",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 8967.0,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 260.07,
+      "compile_s": 7.270086076998268,
+      "inner": 1,
+      "median_ms": 7782.405641002697,
+      "q1_ms": 7724.810295505449,
+      "q3_ms": 7944.061640504515
+    },
+    {
+      "impl": "chunked",
+      "mode": "fwd_bwd",
+      "shape": {
+        "batch": 4,
+        "seq": 8192,
+        "dim": 1024,
+        "state": 16
+      },
+      "xla_temp_mb": 580.25,
+      "xla_arg_mb": 260.07,
+      "xla_out_mb": 260.07,
+      "compile_s": 9.182351104987902,
+      "inner": 1,
+      "median_ms": 1867.5783030048478,
+      "q1_ms": 1844.2846839971025,
+      "q3_ms": 1869.3398700052057,
+      "rel_err_vs_scan": 1.8299684167784246e-06
+    }
+  ]
+}
