@@ -212,6 +212,10 @@ def grouped_swiglu(
     for 33 GiB.  The backward recompute is tied to the incoming cotangent with
     an optimization barrier, so the scheduler cannot hoist it ahead of the
     backward pass and keep it alive.
+
+    Large inputs run in row slabs (see ``SLAB_ELEMS``): forward and backward
+    loop over slabs of the padded layout, so the ``[rows, H]`` activations
+    and their gradients exist for one slab at a time.
     """
     y, _ = _grouped_swiglu_fwd(x, w_gate, w_up, w_down, group_sizes, block_m, interpret)
     return y
@@ -225,7 +229,11 @@ def _resolve_interpret(interpret):
 # ``SLAB_ELEMS // H`` rows, one after another (a ``fori_loop``), so its
 # ``[rows, H]`` hidden activations and their gradients exist for one slab at a
 # time instead of for all ``N * top_k`` rows.  ``None``: one slab.
-SLAB_ELEMS: int | None = 2**24
+# RTX 3090, 8 experts 512 x 1024, top-2, train step: 2**26 is as fast as one
+# slab (bf16 131k tokens 66.3 vs 68.8 ms) with 55% less XLA temp memory
+# (4111 -> 1852 MB fp32); 2**24 saved slightly more at 3-8% more time.  The
+# forward alone pays ~8% for the per-slab row gathers once it has 2+ slabs.
+SLAB_ELEMS: int | None = 2**26
 
 
 def _slabs(n_padded: int, block_m: int, hidden: int) -> tuple[int, int]:
@@ -314,12 +322,12 @@ def _grouped_swiglu_fwd(
         idx = jax.lax.dynamic_slice_in_dim(src, i * rows, rows)
         be = jax.lax.dynamic_slice_in_dim(bexp, i * rb, rb)
         ys = _slab_fwd(_take_rows(x, idx), be, *ws)
-        return y.at[idx].set(ys, mode="drop")  # padding rows are dropped
+        return jax.lax.dynamic_update_slice_in_dim(y, ys, i * rows, 0)
 
-    y = jax.lax.fori_loop(
-        0, n_slabs, body, jnp.zeros((x.shape[0], w_down.shape[-1]), x.dtype)
+    yp = jax.lax.fori_loop(
+        0, n_slabs, body, jnp.zeros((src.shape[0], w_down.shape[-1]), x.dtype)
     )
-    return y, (x, w_gate, w_up, w_down, group_sizes)
+    return gather_from_layout(yp, layout), (x, w_gate, w_up, w_down, group_sizes)
 
 
 def _grouped_swiglu_bwd(block_m, interpret, res, dy):
@@ -353,17 +361,18 @@ def _grouped_swiglu_bwd(block_m, interpret, res, dy):
             dxs, g, u, d = _slab_bwd(
                 _take_rows(x, idx), _take_rows(dy, idx), be, bs, bn, *ws
             )
-            dx = dx.at[idx].set(dxs, mode="drop")
+            dx = jax.lax.dynamic_update_slice_in_dim(dx, dxs, i * rows, 0)
             f32 = jnp.float32
             return dx, dwg + g.astype(f32), dwu + u.astype(f32), dwd + d.astype(f32)
 
         init = (
-            jnp.zeros(x.shape, x.dtype),
+            jnp.zeros((src.shape[0], x.shape[1]), x.dtype),
             jnp.zeros(w_gate.shape, jnp.float32),
             jnp.zeros(w_up.shape, jnp.float32),
             jnp.zeros(w_down.shape, jnp.float32),
         )
-        dx, dw_gate, dw_up, dw_down = jax.lax.fori_loop(0, n_slabs, body, init)
+        dxp, dw_gate, dw_up, dw_down = jax.lax.fori_loop(0, n_slabs, body, init)
+        dx = gather_from_layout(dxp, layout)
     return (
         dx,
         dw_gate.astype(w_gate.dtype),
