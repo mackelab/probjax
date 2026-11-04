@@ -14,10 +14,10 @@ pages. Historical JSON retains the settings used when it was measured.
 | Categorical schedules and training configs | [Categorical controls and updated defaults](diffusion_configs.md#updated-categorical-defaults) | `benchmark_diffusion_configs.py --phase categorical` |
 | Earlier numerical/precision regression measurements | [Diffusion and token-scaling audit](diffusion_audit.md) | `benchmark_diffusion_audit.py`, `benchmark_transformer_audit.py` |
 | DeepSet, induced (ISAB), latent (MLA) and full self-attention on set tasks | [Set transformer benchmark](set_transformers.md) | `benchmark_set_transformers.py` |
-| GPU kernels and models: methodology, bugs fixed, default dispatch | [GPU overview](gpu_overview.md) | `benchmark_gpu_kernels.py`, `benchmark_gpu_nn.py` |
-| Attention vs `jax.nn` (XLA, cuDNN) and PyTorch SDPA; GQA, split-KV, CPU path | [GPU attention](gpu_attention.md) | `benchmark_gpu_attention.py`, `benchmark_gpu_attention_tiles.py`, `benchmark_kernel_attn_*.py` |
-| SSD, Mamba, residual linear attention, Gated DeltaNet, kernel sums, OT, MoE | [GPU kernels](gpu_kernels.md) | `benchmark_kernel_{ssd,mamba,rla,delta,kmv,ot,gmm}.py` |
-| Transformer per `attention_fn`, `scan_layers` / `remat_policy`, SSM cells, UNet, MoE | [GPU models](gpu_nn.md) | `benchmark_gpu_nn.py`, `benchmark_kernel_nn.py` |
+| GPU and CPU performance at a glance: setup, methodology, default dispatch, known limitations | [GPU and CPU performance](gpu_overview.md) | `benchmark_figures.py` (figures and pages) |
+| Attention vs `jax.nn` (XLA, cuDNN) and PyTorch SDPA; memory, GQA, split-KV decoding, CPU | [Attention performance](gpu_attention.md) | `benchmark_gpu_attention.py`, `benchmark_gpu_attention_tiles.py`, `benchmark_kernel_attn_*.py` |
+| SSD, Mamba, residual linear attention, Gated DeltaNet, kernel sums, OT, MoE | [Sequence-mixer, kernel-sum and MoE performance](gpu_kernels.md) | `benchmark_kernel_{ssd,mamba,rla,delta,kmv,ot,gmm}.py` |
+| Transformer per `attention_fn`, `scan_layers` / `remat_policy`, SSM cells, UNet, MoE | [Model performance](gpu_nn.md) | `benchmark_gpu_nn.py`, `benchmark_kernel_nn.py` |
 
 ## Quick smoke checks
 
