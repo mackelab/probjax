@@ -445,7 +445,7 @@ def _state_pass_bwd(wk, kd, qg, p, a, do, ds_fin, precision, use_pallas):
 # ---- end-to-end chunked op with a hand-written, memory-lean VJP ------------
 
 
-def _fused_ok(mode, chunk_size, dk, dv, precision):
+def _fused_ok(mode, chunk_size, dk, dv, precision, dtype):
     """Whether to use the fused Pallas state kernels (WY rebuilt on chip)."""
     if mode not in ("fused", "auto"):
         return False
@@ -455,14 +455,15 @@ def _fused_ok(mode, chunk_size, dk, dv, precision):
     highest = precision in ("highest", lax.Precision.HIGHEST)
     if not _dp.prep_supported(chunk_size, dk, dv) or (highest and dk > 64):
         return False
-    # Measured on a 3090: at Dk = 128 the fused kernels spill (bf16 fwd 21 ms vs
-    # 5.7 ms unfused at B4 H8 L8192), at Dk = 64 they win (1.9 vs 2.6 ms).
-    return mode == "fused" or dk <= 64
+    # Measured on a 3090 (B4 H8 L8192): at Dk = 128 the fused kernels spill
+    # (bf16 fwd 21 ms vs 5.7 ms unfused); at Dk = 64 they win for 16-bit inputs
+    # (bf16 fwd 2.1 vs 2.9 ms) but lose for fp32 ones (4.4 vs 2.8 ms).
+    return mode == "fused" or (dk <= 64 and jnp.dtype(dtype).itemsize <= 2)
 
 
 def _forward(q, k, v, log_alpha, beta, h0, chunk_size, precision, mode):
     g = _chunk_gate(log_alpha, chunk_size)
-    if _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision):
+    if _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision, q.dtype):
         from . import delta_rule_pallas as _dp
 
         t = _wy_inverse(k, g, beta, chunk_size, precision, use_pallas=True)
@@ -509,7 +510,7 @@ def _delta_core_bwd(chunk_size, precision, mode, store_prep, res, cts):
     do = jnp.asarray(do, jnp.float32)
     ds_fin = jnp.asarray(ds_fin, jnp.float32)
     g = _chunk_gate(log_alpha, chunk_size)
-    fused = _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision)
+    fused = _fused_ok(mode, chunk_size, q.shape[-1], v.shape[-1], precision, q.dtype)
     use_pallas = mode in ("pallas", "fused", "auto")
     if prep is None:
         # The barrier stops XLA from CSE-ing this recompute with the forward
@@ -635,7 +636,8 @@ def gated_delta_rule_pallas(
     ``mode="fused"``: sequential state kernels rebuild the WY quantities per
     chunk from ``q, k, v`` (nothing chunk-local is written to HBM in the
     forward pass). ``mode="pallas"``: WY quantities from XLA einsums, Pallas
-    state kernels only. ``"auto"``: fused for ``Dk <= 64``, else ``"pallas"``.
+    state kernels only. ``"auto"``: fused for ``Dk <= 64`` with 16-bit inputs,
+    else ``"pallas"``.
     Shapes the kernels do not support fall back to the XLA pieces.
     """
     return _chunked_impl(

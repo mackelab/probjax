@@ -268,6 +268,9 @@ def main():
         "--peak-seq", nargs="+", type=int, default=None, help="limit --peak to these L"
     )
     p.add_argument("--no-err", action="store_true")
+    p.add_argument(
+        "--peak-only", action="store_true", help="only add peaks to --output rows"
+    )
     p.add_argument("--append", action="store_true", help="merge into --output")
     p.add_argument("--peak-child", type=str, default=None, help=argparse.SUPPRESS)
     a = p.parse_args()
@@ -283,16 +286,16 @@ def main():
     seq_lens = a.seq_lens or ([512, 2048, 8192] if gpu else [512, 2048])
     dtypes = a.dtypes or (["bfloat16", "float32"] if gpu else ["float32"])
     impls = a.impls or (
-        ["recurrent", "chunked", "chunked_fat", "pallas", "ssd"]
+        ["recurrent", "chunked", "chunked_fat", "pallas", "pallas_unfused", "ssd"]
         if gpu
         else ["recurrent", "chunked", "chunked_fat", "ssd"]
     )
     max_rec = a.max_recurrent_seq or (8192 if gpu else 2048)
 
     rows = []
-    if a.append and a.output and a.output.exists():
+    if (a.append or a.peak_only) and a.output and a.output.exists():
         rows = json.loads(a.output.read_text())["results"]
-    for chunk in a.chunk_sizes:
+    for chunk in [] if a.peak_only else a.chunk_sizes:
         for dtype in dtypes:
             for d in a.dims:
                 for seq in seq_lens:
