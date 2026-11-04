@@ -10,36 +10,36 @@ The standard profile (model width 256, 8 heads of 32, 4 layers), batch 8, with e
 
 *Batch 8, width 256, 4 layers, RTX 3090. cuDNN has no fp32 path.*
 
-At 4096 tokens in bf16 the default train step takes 59.8 ms against 87.4 ms with cuDNN attention; `jax.nn` XLA attention is OOM at that size. At this head size (32) the probjax kernel is faster than cuDNN in both the forward and the train step.
+At 4096 tokens in bf16 the default train step takes 50.1 ms against 87.5 ms with cuDNN attention; `jax.nn` XLA attention is 225 at that size. At this head size (32) the probjax kernel is faster than cuDNN in both the forward and the train step.
 
 ??? note "Table"
 
     | model | dtype | tokens | op | default `dot_product_attention` | `flex_attention` | `jax.nn` XLA | `jax.nn` cuDNN |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | transformer | bf16 | 256 | forward | 0.525 | 0.531 | 0.739 | 0.581 |
-    | transformer | bf16 | 256 | train step | 2.65 | 2.43 | 3.17 | 2.98 |
-    | transformer | bf16 | 1024 | forward | 2.25 | 2.22 | 5.60 | 2.82 |
-    | transformer | bf16 | 1024 | train step | 7.55 | 7.59 | 17.7 | 9.73 |
-    | transformer | bf16 | 4096 | forward | 14.8 | 14.8 | 66.6 | 24.0 |
-    | transformer | bf16 | 4096 | train step | 59.8 | 59.0 | OOM | 87.4 |
-    | transformer | fp32 | 256 | forward | 0.908 | 0.908 | 1.18 | — |
-    | transformer | fp32 | 256 | train step | 3.83 | 3.54 | 4.20 | — |
-    | transformer | fp32 | 1024 | forward | 4.18 | 4.18 | 8.20 | — |
-    | transformer | fp32 | 1024 | train step | 16.1 | 15.8 | 24.3 | — |
-    | transformer | fp32 | 4096 | forward | 28.0 | 28.5 | OOM | — |
-    | transformer | fp32 | 4096 | train step | 136 | 136 | OOM | — |
-    | diffusion | bf16 | 256 | forward | 0.626 | 0.625 | 0.835 | 0.675 |
-    | diffusion | bf16 | 256 | train step | 3.03 | 3.29 | 3.94 | 3.63 |
-    | diffusion | bf16 | 1024 | forward | 2.35 | 2.36 | 5.68 | 3.05 |
-    | diffusion | bf16 | 1024 | train step | 8.57 | 8.37 | 18.9 | 10.8 |
-    | diffusion | bf16 | 4096 | forward | 15.0 | 15.0 | 66.9 | 22.7 |
-    | diffusion | bf16 | 4096 | train step | 61.9 | 61.4 | OOM | 89.7 |
-    | diffusion | fp32 | 256 | forward | 0.995 | 0.996 | 1.26 | — |
-    | diffusion | fp32 | 256 | train step | 4.44 | 4.18 | 4.69 | — |
-    | diffusion | fp32 | 1024 | forward | 4.24 | 4.25 | 8.27 | — |
-    | diffusion | fp32 | 1024 | train step | 17.2 | 17.2 | 25.7 | — |
-    | diffusion | fp32 | 4096 | forward | 28.5 | 28.2 | OOM | — |
-    | diffusion | fp32 | 4096 | train step | 138 | 138 | OOM | — |
+    | transformer | bf16 | 256 | forward | 0.533 | 0.507 | 0.748 | 0.582 |
+    | transformer | bf16 | 256 | train step | 2.70 | 2.42 | 3.28 | 2.66 |
+    | transformer | bf16 | 1024 | forward | 2.20 | 2.19 | 5.58 | 2.95 |
+    | transformer | bf16 | 1024 | train step | 7.15 | 7.19 | 17.7 | 9.72 |
+    | transformer | bf16 | 4096 | forward | 14.8 | 14.8 | 66.6 | 22.5 |
+    | transformer | bf16 | 4096 | train step | 50.1 | 50.3 | 225 | 87.5 |
+    | transformer | fp32 | 256 | forward | 0.875 | 0.914 | 1.18 | — |
+    | transformer | fp32 | 256 | train step | 3.51 | 3.45 | 4.31 | — |
+    | transformer | fp32 | 1024 | forward | 4.18 | 4.17 | 8.19 | — |
+    | transformer | fp32 | 1024 | train step | 15.3 | 15.2 | 24.4 | — |
+    | transformer | fp32 | 4096 | forward | 28.2 | 28.8 | 92.3 | — |
+    | transformer | fp32 | 4096 | train step | 126 | 127 | OOM | — |
+    | diffusion | bf16 | 256 | forward | 0.628 | 0.632 | 0.847 | 0.629 |
+    | diffusion | bf16 | 256 | train step | 3.04 | 3.20 | 3.97 | 3.54 |
+    | diffusion | bf16 | 1024 | forward | 2.35 | 2.31 | 5.69 | 3.02 |
+    | diffusion | bf16 | 1024 | train step | 8.52 | 8.19 | 19.2 | 11.4 |
+    | diffusion | bf16 | 4096 | forward | 15.0 | 15.0 | 66.7 | 22.7 |
+    | diffusion | bf16 | 4096 | train step | 52.4 | 52.6 | 228 | 88.5 |
+    | diffusion | fp32 | 256 | forward | 0.993 | 0.951 | 1.26 | — |
+    | diffusion | fp32 | 256 | train step | 4.13 | 4.03 | 4.86 | — |
+    | diffusion | fp32 | 1024 | forward | 4.25 | 4.25 | 8.28 | — |
+    | diffusion | fp32 | 1024 | train step | 16.3 | 16.6 | 26.1 | — |
+    | diffusion | fp32 | 4096 | forward | 28.1 | 28.8 | 92.4 | — |
+    | diffusion | fp32 | 4096 | train step | 128 | 128 | OOM | — |
 
 ## Scan over layers and rematerialization
 

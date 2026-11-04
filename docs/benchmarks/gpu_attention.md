@@ -9,6 +9,7 @@ Inputs are `[batch, seq, heads, head_dim]` with batch 4 and 8 heads unless state
 - **Default (`dot_product_attention`, `implementation=None`).** On NVIDIA GPUs it runs the fused `flex_attention` kernel whenever that is exact (rules [below](#short-sequences-and-the-default-dispatch)); `flex_attention` and `mha` are the same kernel. Its memory grows linearly in T: fwd+bwd ran up to T = 65,536 (the largest length tried) at batch 4 and 8 heads, dense attention only up to T = 4,096.
 - **`jax.nn.dot_product_attention(implementation='cudnn')`** is faster in the bf16 configurations listed under [where an alternative is faster](#where-an-alternative-is-faster); use it there if you need neither probjax masks nor fp32.
 - **Dense attention** (`jax.nn` XLA, torch math, probjax `implementation='xla'`) materializes the T × T scores. In this grid `jax.nn` XLA fails from T = 8192 and torch math from T = 4096 (fwd+bwd); it is only competitive for short sequences.
+- **Backward pass.** `backward_pass_impl='auto'` picks the kernel. On GPUs with about 100 KB of shared memory per block (RTX 30/40 class) it uses the single-pass backward (`'triton_onepass'`: dK/dV per KV block, dQ accumulated with atomic adds, as in FlashAttention-2) for head_dim 32 and 64 and for bf16 head_dim 128 at the lengths where it is faster, otherwise the two-pass kernels (`'triton_fused'`, `'triton_split'`). The single-pass dQ is summed in a nondeterministic order, so gradients are not bitwise reproducible across runs; select a two-pass kernel if you need that. It also keeps a float32 dQ buffer, which adds about a quarter to the backward's temporaries for 16-bit inputs.
 - **Decoding with a KV cache** (few queries, long cache): the default selects the split-KV kernel automatically; see [decoding](#grouped-query-attention-and-decoding).
 - **CPU**: probjax runs an XLA formulation whose memory is linear in T; torch's native CPU kernel is faster ([CPU](#cpu)).
 
@@ -30,27 +31,27 @@ Inputs are `[batch, seq, heads, head_dim]` with batch 4 and 8 heads unless state
 
 Configurations (T ≥ 512) in which another implementation is more than 5% faster than the probjax default, computed from [`gpu_attention.json`](gpu_attention.json):
 
-- **bf16, head_dim 64, non-causal, forward + backward**: `jax.nn` cuDNN at T = 4096, 8192; torch SDPA flash at T = 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.35× faster at T=8192.
-- **bf16, head_dim 64, causal, forward + backward**: `jax.nn` cuDNN at T = 8192; torch SDPA flash at T = 4096, 8192. Largest gap: torch SDPA flash is 1.24× faster at T=8192.
-- **bf16, head_dim 128, non-causal, forward + backward**: `jax.nn` cuDNN at T = 1024, 2048, 4096, 8192; torch SDPA flash at T = 1024, 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.40× faster at T=8192.
-- **bf16, head_dim 128, causal, forward + backward**: `jax.nn` cuDNN at T = 1024, 2048, 4096, 8192; torch SDPA flash at T = 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.47× faster at T=8192.
+- **bf16, head_dim 64, non-causal, forward + backward**: `jax.nn` cuDNN at T = 4096, 8192; torch SDPA flash at T = 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.18× faster at T=8192.
+- **bf16, head_dim 64, causal, forward + backward**: torch SDPA flash at T = 4096, 8192. Largest gap: torch SDPA flash is 1.16× faster at T=8192.
+- **bf16, head_dim 128, non-causal, forward + backward**: `jax.nn` cuDNN at T = 1024, 2048, 4096, 8192; torch SDPA flash at T = 1024, 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.24× faster at T=8192.
+- **bf16, head_dim 128, causal, forward + backward**: `jax.nn` cuDNN at T = 1024, 2048, 4096, 8192; torch SDPA flash at T = 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.28× faster at T=8192.
 - **fp32, head_dim 128, non-causal, forward + backward**: `jax.nn` XLA at T = 512, 1024, 2048, 4096. Largest gap: `jax.nn` XLA is 1.27× faster at T=1024.
-- **bf16, head_dim 64, non-causal, forward**: torch SDPA flash at T = 512, 8192. Largest gap: torch SDPA flash is 1.16× faster at T=512.
+- **bf16, head_dim 64, non-causal, forward**: torch SDPA flash at T = 512, 8192. Largest gap: torch SDPA flash is 1.17× faster at T=512.
 - **bf16, head_dim 64, causal, forward**: torch SDPA flash at T = 512. Largest gap: torch SDPA flash is 1.07× faster at T=512.
 - **bf16, head_dim 128, non-causal, forward**: `jax.nn` cuDNN at T = 4096, 8192; torch SDPA flash at T = 512, 1024, 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.11× faster at T=512.
-- **bf16, head_dim 128, causal, forward**: `jax.nn` cuDNN at T = 2048, 4096, 8192; torch SDPA flash at T = 512, 1024, 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.24× faster at T=512.
+- **bf16, head_dim 128, causal, forward**: `jax.nn` cuDNN at T = 2048, 4096, 8192; torch SDPA flash at T = 512, 1024, 2048, 4096, 8192. Largest gap: torch SDPA flash is 1.26× faster at T=512.
 
 fwd+bwd at T=4096 in every configuration (ms):
 
 | Implementation | bf16 d64 | bf16 d64 causal | bf16 d128 | bf16 d128 causal | fp32 d64 | fp32 d64 causal | fp32 d128 | fp32 d128 causal |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| probjax `dot_product_attention` (default) | 9.37 | 5.12 | 20.2 | 11.7 | 23.6 | 11.8 | 46.2 | 24.5 |
-| probjax `flex_attention` | 9.34 | 5.13 | 20.2 | 11.7 | 23.7 | 11.9 | 46.3 | 24.5 |
-| probjax `mha` | 9.36 | 5.15 | 20.2 | 11.7 | 23.6 | 11.8 | 46.2 | 24.5 |
-| `jax.nn` cuDNN | 8.23 | 4.95 | 15.9 | 8.78 | — | — | — | — |
-| `jax.nn` XLA | 23.3 | 28.0 | 25.5 | 30.1 | 29.3 | 28.5 | 38.2 | 37.1 |
-| torch SDPA flash | 7.78 | 4.57 | 15.1 | 8.50 | — | — | — | — |
-| torch SDPA mem-efficient | 13.0 | 7.43 | 61.0 | 30.4 | 63.4 | 32.9 | 116 | 60.4 |
+| probjax `dot_product_attention` (default) | 8.87 | 4.92 | 17.4 | 10.4 | 19.5 | 10.3 | 46.4 | 24.4 |
+| probjax `flex_attention` | 8.81 | 4.93 | 17.4 | 10.4 | 19.5 | 10.4 | 46.4 | 24.5 |
+| probjax `mha` | 8.83 | 4.94 | 17.4 | 10.4 | 19.5 | 10.3 | 46.2 | 24.5 |
+| `jax.nn` cuDNN | 8.23 | 4.96 | 15.8 | 8.80 | — | — | — | — |
+| `jax.nn` XLA | 23.3 | 28.1 | 25.5 | 30.2 | 29.2 | 28.4 | 38.4 | 37.2 |
+| torch SDPA flash | 7.77 | 4.58 | 15.1 | 8.50 | — | — | — | — |
+| torch SDPA mem-efficient | 13.0 | 7.43 | 60.8 | 30.5 | 63.4 | 33.1 | 116 | 60.4 |
 | torch SDPA math | OOM | OOM | OOM | OOM | OOM | OOM | OOM | OOM |
 
 ??? note "All 16 configurations as tables"
@@ -59,209 +60,209 @@ fwd+bwd at T=4096 in every configuration (ms):
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.035 | 0.054 | 0.087 | 0.157 | 0.386 | 0.558 | 1.30 | 2.12 | 8.42 |
-    | probjax `flex_attention` | 0.039 | 0.054 | 0.087 | 0.156 | 0.387 | 0.558 | 1.30 | 2.11 | 8.40 |
-    | probjax `mha` | 0.035 | 0.054 | 0.092 | 0.162 | 0.396 | 0.568 | 1.31 | 2.12 | 8.45 |
-    | `jax.nn` cuDNN | 0.058 | 0.059 | 0.108 | 0.170 | 0.365 | 0.631 | 1.18 | 2.19 | 8.19 |
-    | `jax.nn` XLA | 0.041 | 0.160 | 0.218 | 0.562 | 1.16 | 2.05 | 4.42 | 7.84 | fail† |
-    | torch SDPA flash | 0.025 | 0.046 | 0.062 | 0.162 | 0.314 | 0.553 | 1.20 | 2.05 | 7.83 |
-    | torch SDPA mem-efficient | 0.032 | 0.061 | 0.077 | 0.200 | 0.415 | 0.711 | 1.50 | 2.67 | 10.5 |
-    | torch SDPA math | 0.161 | 0.567 | 0.734 | 1.99 | 4.03 | 7.33 | 16.1 | 28.7 | — |
+    | probjax `dot_product_attention` (default) | 0.042 | 0.054 | 0.087 | 0.157 | 0.386 | 0.559 | 1.30 | 2.12 | 8.43 |
+    | probjax `flex_attention` | 0.043 | 0.054 | 0.087 | 0.157 | 0.386 | 0.559 | 1.30 | 2.12 | 8.42 |
+    | probjax `mha` | 0.041 | 0.054 | 0.092 | 0.163 | 0.397 | 0.568 | 1.32 | 2.13 | 8.46 |
+    | `jax.nn` cuDNN | 0.056 | 0.070 | 0.108 | 0.169 | 0.365 | 0.632 | 1.18 | 2.19 | 8.17 |
+    | `jax.nn` XLA | 0.042 | 0.160 | 0.216 | 0.559 | 1.16 | 2.05 | 4.50 | 7.85 | 31.1 |
+    | torch SDPA flash | 0.026 | 0.046 | 0.062 | 0.162 | 0.313 | 0.552 | 1.20 | 2.04 | 7.83 |
+    | torch SDPA mem-efficient | 0.032 | 0.062 | 0.077 | 0.203 | 0.415 | 0.711 | 1.48 | 2.67 | 10.5 |
+    | torch SDPA math | 0.171 | 0.567 | 0.733 | 1.99 | 4.04 | 7.34 | 16.1 | 28.6 | — |
 
     **bf16, head_dim 64, non-causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.049 | 0.207 | 0.312 | 0.681 | 1.57 | 2.45 | 5.57 | 9.37 | 39.0 |
-    | probjax `flex_attention` | 0.049 | 0.207 | 0.313 | 0.681 | 1.57 | 2.46 | 5.59 | 9.34 | 39.1 |
-    | probjax `mha` | 0.049 | 0.206 | 0.311 | 0.681 | 1.54 | 2.46 | 5.71 | 9.36 | 39.2 |
-    | `jax.nn` cuDNN | 0.113 | 0.237 | 0.339 | 0.732 | 1.41 | 2.37 | 4.89 | 8.23 | 30.7 |
-    | `jax.nn` XLA | 0.054 | 0.459 | 0.741 | 1.61 | 3.37 | 6.12 | 12.7 | 23.3 | OOM |
-    | torch SDPA flash | 0.241 | 0.234 | 0.295 | 0.728 | 1.32 | 2.25 | 4.61 | 7.78 | 28.8 |
-    | torch SDPA mem-efficient | 0.250 | 0.324 | 0.443 | 1.06 | 2.21 | 3.55 | 7.81 | 13.0 | 50.8 |
-    | torch SDPA math | 0.643 | 1.37 | 1.74 | 4.83 | 9.63 | 17.6 | 37.8 | OOM | — |
+    | probjax `dot_product_attention` (default) | 0.059 | 0.207 | 0.314 | 0.682 | 1.56 | 2.39 | 5.67 | 8.87 | 33.8 |
+    | probjax `flex_attention` | 0.049 | 0.207 | 0.314 | 0.682 | 1.55 | 2.39 | 5.68 | 8.81 | 34.0 |
+    | probjax `mha` | 0.050 | 0.207 | 0.310 | 0.682 | 1.54 | 2.39 | 5.59 | 8.83 | 33.9 |
+    | `jax.nn` cuDNN | 0.111 | 0.235 | 0.340 | 0.728 | 1.41 | 2.37 | 4.89 | 8.23 | 32.0 |
+    | `jax.nn` XLA | 0.058 | 0.458 | 0.741 | 1.62 | 3.37 | 6.11 | 12.7 | 23.3 | OOM |
+    | torch SDPA flash | 0.242 | 0.246 | 0.297 | 0.730 | 1.33 | 2.24 | 4.61 | 7.77 | 28.6 |
+    | torch SDPA mem-efficient | 0.248 | 0.324 | 0.446 | 1.05 | 2.21 | 3.55 | 7.81 | 13.0 | 50.5 |
+    | torch SDPA math | 0.596 | 1.37 | 1.75 | 4.85 | 9.67 | 17.6 | 37.8 | OOM | — |
 
     **bf16, head_dim 64, causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.036 | 0.042 | 0.074 | 0.102 | 0.260 | 0.332 | 0.788 | 1.19 | 4.49 |
-    | probjax `flex_attention` | 0.037 | 0.042 | 0.074 | 0.103 | 0.261 | 0.333 | 0.788 | 1.19 | 4.49 |
-    | probjax `mha` | 0.035 | 0.042 | 0.077 | 0.109 | 0.261 | 0.342 | 0.829 | 1.21 | 4.54 |
-    | `jax.nn` cuDNN | 0.058 | 0.069 | 0.083 | 0.138 | 0.256 | 0.401 | 0.782 | 1.30 | 4.63 |
-    | `jax.nn` XLA | 0.040 | 0.206 | 0.264 | 0.593 | 1.20 | 2.38 | 4.40 | 7.84 | fail† |
-    | torch SDPA flash | 0.025 | 0.039 | 0.054 | 0.115 | 0.225 | 0.341 | 0.726 | 1.17 | 4.31 |
-    | torch SDPA mem-efficient | 0.032 | 0.047 | 0.064 | 0.128 | 0.255 | 0.423 | 0.837 | 1.48 | 5.55 |
-    | torch SDPA math | 0.199 | 0.663 | 0.861 | 2.46 | 5.05 | 9.23 | 20.4 | 36.6 | — |
+    | probjax `dot_product_attention` (default) | 0.036 | 0.042 | 0.074 | 0.102 | 0.261 | 0.332 | 0.785 | 1.19 | 4.51 |
+    | probjax `flex_attention` | 0.035 | 0.042 | 0.075 | 0.103 | 0.260 | 0.332 | 0.789 | 1.19 | 4.51 |
+    | probjax `mha` | 0.037 | 0.042 | 0.074 | 0.109 | 0.261 | 0.342 | 0.822 | 1.19 | 4.53 |
+    | `jax.nn` cuDNN | 0.058 | 0.055 | 0.082 | 0.138 | 0.256 | 0.402 | 0.783 | 1.30 | 4.62 |
+    | `jax.nn` XLA | 0.040 | 0.205 | 0.265 | 0.587 | 1.20 | 2.43 | 4.49 | 7.86 | 31.1 |
+    | torch SDPA flash | 0.027 | 0.039 | 0.054 | 0.114 | 0.225 | 0.342 | 0.726 | 1.17 | 4.30 |
+    | torch SDPA mem-efficient | 0.032 | 0.047 | 0.064 | 0.128 | 0.257 | 0.424 | 0.836 | 1.49 | 5.55 |
+    | torch SDPA math | 0.201 | 0.661 | 0.864 | 2.47 | 5.05 | 9.23 | 20.4 | 36.6 | — |
 
     **bf16, head_dim 64, causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.051 | 0.139 | 0.214 | 0.412 | 0.911 | 1.40 | 3.06 | 5.12 | 19.8 |
-    | probjax `flex_attention` | 0.052 | 0.139 | 0.214 | 0.409 | 0.911 | 1.40 | 3.06 | 5.13 | 19.8 |
-    | probjax `mha` | 0.050 | 0.139 | 0.213 | 0.412 | 0.923 | 1.40 | 3.14 | 5.15 | 19.8 |
-    | `jax.nn` cuDNN | 0.116 | 0.217 | 0.299 | 0.541 | 0.986 | 1.54 | 2.95 | 4.95 | 17.5 |
-    | `jax.nn` XLA | 0.055 | 0.529 | 0.751 | 2.02 | 3.57 | 7.05 | 12.8 | 28.0 | OOM |
-    | torch SDPA flash | 0.241 | 0.237 | 0.267 | 0.527 | 0.948 | 1.45 | 2.77 | 4.57 | 16.0 |
-    | torch SDPA mem-efficient | 0.224 | 0.257 | 0.355 | 0.693 | 1.39 | 2.14 | 4.42 | 7.43 | 27.8 |
-    | torch SDPA math | 0.629 | 1.45 | 1.86 | 5.27 | 10.6 | 19.3 | 41.7 | OOM | — |
+    | probjax `dot_product_attention` (default) | 0.053 | 0.139 | 0.215 | 0.412 | 0.911 | 1.36 | 2.99 | 4.92 | 18.7 |
+    | probjax `flex_attention` | 0.053 | 0.138 | 0.215 | 0.413 | 0.911 | 1.37 | 3.00 | 4.93 | 18.7 |
+    | probjax `mha` | 0.058 | 0.139 | 0.214 | 0.412 | 0.917 | 1.36 | 3.09 | 4.94 | 18.8 |
+    | `jax.nn` cuDNN | 0.113 | 0.217 | 0.298 | 0.540 | 0.985 | 1.54 | 2.95 | 4.96 | 19.2 |
+    | `jax.nn` XLA | 0.056 | 0.529 | 0.752 | 2.03 | 3.57 | 7.05 | 12.8 | 28.1 | OOM |
+    | torch SDPA flash | 0.235 | 0.244 | 0.268 | 0.527 | 0.949 | 1.46 | 2.77 | 4.58 | 16.0 |
+    | torch SDPA mem-efficient | 0.248 | 0.256 | 0.355 | 0.694 | 1.38 | 2.15 | 4.46 | 7.43 | 27.7 |
+    | torch SDPA math | 0.686 | 1.44 | 1.86 | 5.29 | 10.6 | 19.4 | 41.7 | OOM | — |
 
     **bf16, head_dim 128, non-causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.036 | 0.097 | 0.174 | 0.340 | 0.774 | 1.18 | 2.77 | 4.36 | 16.9 |
-    | probjax `flex_attention` | 0.036 | 0.096 | 0.173 | 0.340 | 0.774 | 1.17 | 2.77 | 4.35 | 16.9 |
-    | probjax `mha` | 0.036 | 0.108 | 0.186 | 0.367 | 0.845 | 1.20 | 3.00 | 4.72 | 16.8 |
-    | `jax.nn` cuDNN | 0.056 | 0.094 | 0.119 | 0.330 | 0.622 | 1.12 | 2.36 | 4.10 | 15.8 |
-    | `jax.nn` XLA | 0.047 | 0.198 | 0.271 | 0.650 | 1.38 | 2.34 | 5.07 | 8.86 | fail† |
-    | torch SDPA flash | 0.026 | 0.087 | 0.109 | 0.315 | 0.590 | 1.09 | 2.29 | 4.02 | 15.5 |
-    | torch SDPA mem-efficient | 0.033 | 0.126 | 0.158 | 0.422 | 0.893 | 1.55 | 3.34 | 5.93 | 23.3 |
-    | torch SDPA math | 0.159 | 0.671 | 0.876 | 2.30 | 4.67 | 8.40 | 18.4 | 32.7 | — |
+    | probjax `dot_product_attention` (default) | 0.036 | 0.097 | 0.173 | 0.340 | 0.778 | 1.18 | 2.77 | 4.35 | 16.9 |
+    | probjax `flex_attention` | 0.041 | 0.097 | 0.173 | 0.340 | 0.775 | 1.18 | 2.77 | 4.36 | 16.8 |
+    | probjax `mha` | 0.047 | 0.108 | 0.185 | 0.379 | 0.843 | 1.26 | 3.01 | 4.40 | 16.8 |
+    | `jax.nn` cuDNN | 0.057 | 0.094 | 0.119 | 0.330 | 0.623 | 1.12 | 2.36 | 4.12 | 15.8 |
+    | `jax.nn` XLA | 0.038 | 0.198 | 0.271 | 0.651 | 1.38 | 2.34 | 5.09 | 8.86 | 36.3 |
+    | torch SDPA flash | 0.027 | 0.088 | 0.110 | 0.316 | 0.595 | 1.09 | 2.29 | 4.02 | 15.5 |
+    | torch SDPA mem-efficient | 0.036 | 0.126 | 0.159 | 0.422 | 0.893 | 1.56 | 3.34 | 5.92 | 23.5 |
+    | torch SDPA math | 0.162 | 0.675 | 0.879 | 2.31 | 4.67 | 8.41 | 18.5 | 32.8 | — |
 
     **bf16, head_dim 128, non-causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.058 | 0.443 | 0.663 | 1.49 | 3.48 | 5.35 | 12.8 | 20.2 | 80.0 |
-    | probjax `flex_attention` | 0.052 | 0.443 | 0.663 | 1.50 | 3.48 | 5.38 | 12.8 | 20.2 | 80.0 |
-    | probjax `mha` | 0.053 | 0.443 | 0.676 | 1.49 | 3.51 | 5.39 | 12.8 | 20.2 | 80.3 |
-    | `jax.nn` cuDNN | 0.109 | 0.441 | 0.587 | 1.32 | 2.82 | 4.36 | 9.97 | 15.9 | 60.7 |
-    | `jax.nn` XLA | 0.074 | 0.545 | 0.864 | 1.87 | 3.87 | 6.77 | 14.3 | 25.5 | fail† |
-    | torch SDPA flash | 0.253 | 0.462 | 0.571 | 1.34 | 2.53 | 4.28 | 8.66 | 15.1 | 57.4 |
-    | torch SDPA mem-efficient | 0.247 | 1.11 | 1.56 | 3.91 | 8.81 | 15.3 | 31.7 | 61.0 | 245 |
-    | torch SDPA math | 0.613 | 1.64 | 2.11 | 5.61 | 11.1 | 20.0 | 42.8 | OOM | — |
+    | probjax `dot_product_attention` (default) | 0.058 | 0.445 | 0.662 | 1.50 | 3.48 | 4.69 | 10.6 | 17.4 | 70.9 |
+    | probjax `flex_attention` | 0.055 | 0.446 | 0.662 | 1.50 | 3.48 | 4.67 | 10.6 | 17.4 | 70.6 |
+    | probjax `mha` | 0.056 | 0.445 | 0.675 | 1.50 | 3.51 | 4.68 | 10.7 | 17.4 | 71.2 |
+    | `jax.nn` cuDNN | 0.114 | 0.445 | 0.588 | 1.32 | 2.82 | 4.35 | 9.97 | 15.8 | 60.4 |
+    | `jax.nn` XLA | 0.074 | 0.545 | 0.864 | 1.87 | 3.89 | 6.84 | 14.3 | 25.5 | OOM |
+    | torch SDPA flash | 0.243 | 0.463 | 0.575 | 1.34 | 2.55 | 4.28 | 8.66 | 15.1 | 57.2 |
+    | torch SDPA mem-efficient | 0.251 | 1.11 | 1.56 | 3.93 | 8.80 | 15.2 | 31.7 | 60.8 | 246 |
+    | torch SDPA math | 0.620 | 1.65 | 2.11 | 5.61 | 11.1 | 20.0 | 42.8 | OOM | — |
 
     **bf16, head_dim 128, causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.038 | 0.078 | 0.162 | 0.218 | 0.558 | 0.699 | 1.73 | 2.47 | 9.32 |
-    | probjax `flex_attention` | 0.037 | 0.087 | 0.162 | 0.218 | 0.560 | 0.699 | 1.73 | 2.47 | 9.35 |
-    | probjax `mha` | 0.037 | 0.078 | 0.159 | 0.243 | 0.552 | 0.769 | 1.70 | 2.70 | 10.1 |
-    | `jax.nn` cuDNN | 0.057 | 0.079 | 0.106 | 0.210 | 0.399 | 0.651 | 1.33 | 2.26 | 8.46 |
-    | `jax.nn` XLA | 0.038 | 0.239 | 0.319 | 0.688 | 1.43 | 2.63 | 5.07 | 8.86 | fail† |
-    | torch SDPA flash | 0.026 | 0.063 | 0.084 | 0.181 | 0.359 | 0.604 | 1.23 | 2.23 | 8.54 |
-    | torch SDPA mem-efficient | 0.032 | 0.083 | 0.116 | 0.254 | 0.513 | 0.862 | 1.77 | 3.17 | 12.1 |
-    | torch SDPA math | 0.198 | 0.765 | 1.00 | 2.78 | 5.68 | 10.3 | 22.6 | 40.4 | — |
+    | probjax `dot_product_attention` (default) | 0.037 | 0.078 | 0.162 | 0.218 | 0.558 | 0.698 | 1.73 | 2.47 | 9.35 |
+    | probjax `flex_attention` | 0.037 | 0.078 | 0.162 | 0.218 | 0.557 | 0.699 | 1.73 | 2.47 | 9.34 |
+    | probjax `mha` | 0.038 | 0.078 | 0.173 | 0.243 | 0.552 | 0.769 | 1.70 | 2.71 | 10.1 |
+    | `jax.nn` cuDNN | 0.058 | 0.079 | 0.107 | 0.211 | 0.399 | 0.652 | 1.33 | 2.28 | 8.53 |
+    | `jax.nn` XLA | 0.037 | 0.240 | 0.318 | 0.688 | 1.42 | 2.80 | 5.06 | 8.91 | 36.4 |
+    | torch SDPA flash | 0.027 | 0.062 | 0.084 | 0.181 | 0.360 | 0.609 | 1.23 | 2.22 | 8.52 |
+    | torch SDPA mem-efficient | 0.033 | 0.082 | 0.116 | 0.253 | 0.514 | 0.862 | 1.77 | 3.17 | 12.1 |
+    | torch SDPA math | 0.216 | 0.767 | 1.01 | 2.79 | 5.69 | 10.3 | 22.6 | 40.4 | — |
 
     **bf16, head_dim 128, causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.055 | 0.311 | 0.467 | 0.937 | 2.05 | 3.17 | 7.00 | 11.7 | 45.0 |
-    | probjax `flex_attention` | 0.051 | 0.311 | 0.467 | 0.937 | 2.04 | 3.18 | 7.01 | 11.7 | 45.1 |
-    | probjax `mha` | 0.050 | 0.311 | 0.475 | 0.937 | 2.07 | 3.18 | 7.09 | 11.7 | 45.6 |
-    | `jax.nn` cuDNN | 0.119 | 0.341 | 0.468 | 0.874 | 1.72 | 2.60 | 5.53 | 8.78 | 32.0 |
-    | `jax.nn` XLA | 0.075 | 0.611 | 0.874 | 2.27 | 4.05 | 7.66 | 14.3 | 30.1 | fail† |
-    | torch SDPA flash | 0.240 | 0.357 | 0.462 | 0.897 | 1.63 | 2.59 | 4.96 | 8.50 | 30.6 |
-    | torch SDPA mem-efficient | 0.226 | 0.681 | 0.959 | 2.21 | 4.63 | 7.97 | 16.8 | 30.4 | 125 |
-    | torch SDPA math | 0.639 | 1.72 | 2.22 | 6.04 | 12.0 | 21.7 | 46.7 | OOM | — |
+    | probjax `dot_product_attention` (default) | 0.056 | 0.311 | 0.467 | 0.937 | 2.05 | 2.90 | 6.18 | 10.4 | 39.0 |
+    | probjax `flex_attention` | 0.057 | 0.312 | 0.467 | 0.937 | 2.05 | 2.90 | 6.18 | 10.4 | 38.9 |
+    | probjax `mha` | 0.057 | 0.311 | 0.476 | 0.937 | 2.07 | 2.90 | 6.27 | 10.4 | 38.7 |
+    | `jax.nn` cuDNN | 0.121 | 0.341 | 0.468 | 0.870 | 1.74 | 2.60 | 5.51 | 8.80 | 32.3 |
+    | `jax.nn` XLA | 0.076 | 0.610 | 0.874 | 2.27 | 4.06 | 7.74 | 14.2 | 30.2 | OOM |
+    | torch SDPA flash | 0.245 | 0.357 | 0.461 | 0.897 | 1.63 | 2.59 | 4.97 | 8.50 | 30.5 |
+    | torch SDPA mem-efficient | 0.249 | 0.682 | 0.959 | 2.21 | 4.63 | 7.98 | 16.8 | 30.5 | 124 |
+    | torch SDPA math | 0.656 | 1.73 | 2.22 | 6.03 | 12.0 | 21.7 | 46.7 | OOM | — |
 
     **fp32, head_dim 64, non-causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.042 | 0.102 | 0.175 | 0.328 | 0.803 | 1.19 | 2.81 | 4.56 | 18.2 |
-    | probjax `flex_attention` | 0.036 | 0.101 | 0.175 | 0.328 | 0.809 | 1.19 | 2.80 | 4.53 | 18.0 |
-    | probjax `mha` | 0.036 | 0.107 | 0.174 | 0.331 | 0.801 | 1.18 | 2.80 | 4.55 | 18.1 |
+    | probjax `dot_product_attention` (default) | 0.046 | 0.102 | 0.175 | 0.328 | 0.805 | 1.19 | 2.80 | 4.57 | 18.2 |
+    | probjax `flex_attention` | 0.044 | 0.102 | 0.175 | 0.331 | 0.804 | 1.19 | 2.81 | 4.53 | 18.1 |
+    | probjax `mha` | 0.043 | 0.107 | 0.174 | 0.328 | 0.803 | 1.18 | 2.81 | 4.53 | 18.1 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.037 | 0.231 | 0.317 | 0.794 | 1.63 | 2.85 | 5.98 | 10.8 | fail† |
+    | `jax.nn` XLA | 0.053 | 0.231 | 0.317 | 0.799 | 1.66 | 2.87 | 5.98 | 10.8 | 45.0 |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.033 | 0.320 | 0.417 | 1.12 | 2.34 | 4.09 | 8.74 | 16.1 | 68.3 |
-    | torch SDPA math | 0.129 | 0.469 | 0.612 | 1.69 | 3.46 | 6.32 | 14.2 | 24.8 | — |
+    | torch SDPA mem-efficient | 0.033 | 0.320 | 0.418 | 1.12 | 2.33 | 4.10 | 8.76 | 16.1 | 68.2 |
+    | torch SDPA math | 0.130 | 0.467 | 0.612 | 1.70 | 3.46 | 6.31 | 14.1 | 24.8 | — |
 
     **fp32, head_dim 64, non-causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.047 | 0.445 | 0.681 | 1.55 | 3.50 | 5.87 | 13.4 | 23.6 | 101 |
-    | probjax `flex_attention` | 0.043 | 0.444 | 0.681 | 1.55 | 3.49 | 5.87 | 13.3 | 23.7 | 101 |
-    | probjax `mha` | 0.043 | 0.444 | 0.695 | 1.55 | 3.53 | 5.85 | 13.5 | 23.6 | 101 |
+    | probjax `dot_product_attention` (default) | 0.059 | 0.445 | 0.682 | 1.39 | 3.17 | 5.09 | 11.4 | 19.5 | 78.2 |
+    | probjax `flex_attention` | 0.043 | 0.445 | 0.677 | 1.39 | 3.18 | 5.11 | 11.5 | 19.5 | 78.7 |
+    | probjax `mha` | 0.043 | 0.444 | 0.697 | 1.39 | 3.15 | 5.10 | 11.5 | 19.5 | 78.7 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.073 | 0.606 | 0.820 | 1.94 | 4.38 | 7.64 | 16.2 | 29.3 | OOM |
+    | `jax.nn` XLA | 0.074 | 0.607 | 0.821 | 1.94 | 4.43 | 7.66 | 16.2 | 29.2 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.222 | 1.27 | 1.64 | 4.39 | 9.20 | 16.1 | 34.3 | 63.4 | 254 |
-    | torch SDPA math | 0.504 | 1.23 | 1.58 | 4.48 | 8.97 | 16.5 | 35.7 | OOM | — |
+    | torch SDPA mem-efficient | 0.232 | 1.28 | 1.64 | 4.40 | 9.21 | 16.2 | 34.2 | 63.4 | 254 |
+    | torch SDPA math | 0.517 | 1.23 | 1.58 | 4.49 | 8.98 | 16.5 | 35.7 | OOM | — |
 
     **fp32, head_dim 64, causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.039 | 0.075 | 0.149 | 0.213 | 0.541 | 0.702 | 1.66 | 2.55 | 9.75 |
-    | probjax `flex_attention` | 0.040 | 0.075 | 0.149 | 0.213 | 0.539 | 0.702 | 1.66 | 2.55 | 9.76 |
-    | probjax `mha` | 0.037 | 0.082 | 0.147 | 0.213 | 0.532 | 0.710 | 1.69 | 2.55 | 9.76 |
+    | probjax `dot_product_attention` (default) | 0.038 | 0.075 | 0.149 | 0.213 | 0.538 | 0.703 | 1.66 | 2.54 | 9.74 |
+    | probjax `flex_attention` | 0.037 | 0.075 | 0.149 | 0.212 | 0.540 | 0.702 | 1.66 | 2.53 | 9.78 |
+    | probjax `mha` | 0.037 | 0.082 | 0.148 | 0.212 | 0.530 | 0.710 | 1.68 | 2.53 | 9.71 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.039 | 0.265 | 0.352 | 0.815 | 1.63 | 2.89 | 5.99 | 10.9 | fail† |
+    | `jax.nn` XLA | 0.038 | 0.266 | 0.351 | 0.818 | 1.65 | 2.89 | 5.99 | 10.8 | 44.6 |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.033 | 0.213 | 0.297 | 0.661 | 1.35 | 2.33 | 4.85 | 8.90 | 35.7 |
-    | torch SDPA math | 0.168 | 0.562 | 0.740 | 2.17 | 4.46 | 8.19 | 18.3 | 32.7 | — |
+    | torch SDPA mem-efficient | 0.033 | 0.215 | 0.298 | 0.662 | 1.36 | 2.33 | 4.85 | 8.88 | 35.6 |
+    | torch SDPA math | 0.171 | 0.561 | 0.742 | 2.17 | 4.46 | 8.18 | 18.3 | 32.7 | — |
 
     **fp32, head_dim 64, causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.052 | 0.268 | 0.439 | 0.873 | 1.97 | 3.08 | 6.88 | 11.8 | 48.2 |
-    | probjax `flex_attention` | 0.051 | 0.268 | 0.436 | 0.873 | 1.96 | 3.09 | 6.92 | 11.9 | 48.9 |
-    | probjax `mha` | 0.054 | 0.269 | 0.447 | 0.873 | 2.00 | 3.09 | 7.18 | 11.8 | 48.8 |
+    | probjax `dot_product_attention` (default) | 0.049 | 0.270 | 0.437 | 0.781 | 1.77 | 2.75 | 6.13 | 10.3 | 40.2 |
+    | probjax `flex_attention` | 0.058 | 0.270 | 0.438 | 0.780 | 1.77 | 2.76 | 6.14 | 10.4 | 40.3 |
+    | probjax `mha` | 0.046 | 0.270 | 0.449 | 0.781 | 1.81 | 2.75 | 6.34 | 10.3 | 40.5 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.087 | 0.625 | 0.860 | 2.13 | 4.53 | 7.64 | 16.2 | 28.5 | OOM |
+    | `jax.nn` XLA | 0.088 | 0.627 | 0.866 | 2.13 | 4.56 | 7.67 | 16.2 | 28.4 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.223 | 0.805 | 1.12 | 2.52 | 5.12 | 8.80 | 18.1 | 32.9 | 131 |
-    | torch SDPA math | 0.537 | 1.31 | 1.69 | 4.90 | 9.87 | 18.2 | 39.5 | OOM | — |
+    | torch SDPA mem-efficient | 0.241 | 0.811 | 1.12 | 2.52 | 5.13 | 8.78 | 18.1 | 33.1 | 131 |
+    | torch SDPA math | 0.552 | 1.31 | 1.69 | 4.92 | 9.87 | 18.2 | 39.5 | OOM | — |
 
     **fp32, head_dim 128, non-causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.037 | 0.209 | 0.360 | 0.704 | 1.72 | 2.58 | 6.01 | 9.95 | 39.4 |
-    | probjax `flex_attention` | 0.033 | 0.209 | 0.362 | 0.704 | 1.72 | 2.58 | 6.01 | 9.94 | 39.7 |
-    | probjax `mha` | 0.040 | 0.226 | 0.359 | 0.704 | 1.72 | 2.71 | 6.11 | 9.96 | 41.1 |
+    | probjax `dot_product_attention` (default) | 0.032 | 0.210 | 0.361 | 0.705 | 1.73 | 2.59 | 6.07 | 9.97 | 39.9 |
+    | probjax `flex_attention` | 0.032 | 0.210 | 0.361 | 0.706 | 1.73 | 2.59 | 6.07 | 9.98 | 39.8 |
+    | probjax `mha` | 0.032 | 0.225 | 0.360 | 0.705 | 1.72 | 2.72 | 6.11 | 9.96 | 41.3 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.049 | 0.322 | 0.451 | 1.05 | 2.28 | 3.78 | 8.11 | 14.4 | fail† |
+    | `jax.nn` XLA | 0.043 | 0.322 | 0.452 | 1.05 | 2.27 | 3.80 | 8.09 | 14.3 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.044 | 0.490 | 0.608 | 1.70 | 3.62 | 6.37 | 13.7 | 24.4 | 98.2 |
-    | torch SDPA math | 0.132 | 0.547 | 0.721 | 1.96 | 4.01 | 7.28 | 16.2 | 28.9 | — |
+    | torch SDPA mem-efficient | 0.044 | 0.489 | 0.608 | 1.71 | 3.65 | 6.33 | 13.7 | 24.4 | 97.9 |
+    | torch SDPA math | 0.131 | 0.547 | 0.722 | 1.95 | 4.01 | 7.28 | 16.3 | 28.9 | — |
 
     **fp32, head_dim 128, non-causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.095 | 0.986 | 1.40 | 3.30 | 7.39 | 12.1 | 27.0 | 46.2 | 185 |
-    | probjax `flex_attention` | 0.095 | 0.987 | 1.39 | 3.29 | 7.40 | 12.1 | 26.9 | 46.3 | 185 |
-    | probjax `mha` | 0.095 | 0.986 | 1.42 | 3.29 | 7.46 | 12.1 | 27.2 | 46.2 | 185 |
+    | probjax `dot_product_attention` (default) | 0.096 | 0.987 | 1.40 | 3.31 | 7.42 | 12.1 | 27.1 | 46.4 | 186 |
+    | probjax `flex_attention` | 0.096 | 0.988 | 1.40 | 3.32 | 7.41 | 12.1 | 27.0 | 46.4 | 185 |
+    | probjax `mha` | 0.096 | 0.988 | 1.42 | 3.30 | 7.47 | 12.1 | 27.2 | 46.2 | 185 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.098 | 0.841 | 1.18 | 2.61 | 5.99 | 10.0 | 21.9 | 38.2 | OOM |
+    | `jax.nn` XLA | 0.103 | 0.840 | 1.18 | 2.62 | 6.01 | 10.0 | 21.9 | 38.4 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.238 | 2.32 | 2.97 | 8.02 | 17.0 | 30.0 | 64.1 | 116 | 456 |
-    | torch SDPA math | 0.494 | 1.43 | 1.84 | 5.10 | 10.3 | 18.6 | 40.3 | OOM | — |
+    | torch SDPA mem-efficient | 0.238 | 2.32 | 2.97 | 7.99 | 17.1 | 30.1 | 64.2 | 116 | 456 |
+    | torch SDPA math | 0.481 | 1.43 | 1.85 | 5.09 | 10.3 | 18.6 | 40.4 | OOM | — |
 
     **fp32, head_dim 128, causal, forward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.032 | 0.146 | 0.297 | 0.429 | 1.10 | 1.44 | 3.45 | 5.35 | 20.7 |
-    | probjax `flex_attention` | 0.032 | 0.146 | 0.297 | 0.427 | 1.10 | 1.44 | 3.46 | 5.33 | 20.6 |
-    | probjax `mha` | 0.035 | 0.146 | 0.296 | 0.425 | 1.10 | 1.53 | 3.56 | 5.53 | 20.9 |
+    | probjax `dot_product_attention` (default) | 0.032 | 0.146 | 0.296 | 0.432 | 1.11 | 1.46 | 3.47 | 5.35 | 20.7 |
+    | probjax `flex_attention` | 0.032 | 0.147 | 0.297 | 0.430 | 1.11 | 1.45 | 3.47 | 5.40 | 20.9 |
+    | probjax `mha` | 0.032 | 0.146 | 0.295 | 0.427 | 1.10 | 1.52 | 3.57 | 5.58 | 21.2 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.049 | 0.356 | 0.485 | 1.06 | 2.26 | 3.79 | 8.04 | 14.3 | fail† |
+    | `jax.nn` XLA | 0.049 | 0.356 | 0.487 | 1.06 | 2.24 | 3.79 | 8.03 | 14.2 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.043 | 0.308 | 0.444 | 0.989 | 2.03 | 3.49 | 7.25 | 13.1 | 51.5 |
-    | torch SDPA math | 0.168 | 0.639 | 0.846 | 2.41 | 5.01 | 9.12 | 20.3 | 36.6 | — |
+    | torch SDPA mem-efficient | 0.043 | 0.308 | 0.442 | 0.991 | 2.03 | 3.49 | 7.23 | 13.1 | 51.4 |
+    | torch SDPA math | 0.180 | 0.642 | 0.850 | 2.42 | 5.01 | 9.12 | 20.3 | 36.7 | — |
 
     **fp32, head_dim 128, causal, forward + backward**
 
     | Implementation | T=128 | T=512 | T=600 | T=1024 | T=1500 | T=2048 | T=3000 | T=4096 | T=8192 |
     | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-    | probjax `dot_product_attention` (default) | 0.084 | 0.617 | 0.937 | 1.88 | 4.24 | 6.57 | 14.6 | 24.5 | 96.7 |
-    | probjax `flex_attention` | 0.092 | 0.618 | 0.937 | 1.88 | 4.25 | 6.54 | 14.6 | 24.5 | 97.0 |
-    | probjax `mha` | 0.084 | 0.618 | 0.958 | 1.88 | 4.30 | 6.56 | 14.9 | 24.5 | 96.5 |
+    | probjax `dot_product_attention` (default) | 0.085 | 0.618 | 0.935 | 1.89 | 4.24 | 6.57 | 14.7 | 24.4 | 96.8 |
+    | probjax `flex_attention` | 0.084 | 0.619 | 0.934 | 1.89 | 4.24 | 6.59 | 14.7 | 24.5 | 96.6 |
+    | probjax `mha` | 0.092 | 0.617 | 0.958 | 1.89 | 4.30 | 6.61 | 15.0 | 24.5 | 96.9 |
     | `jax.nn` cuDNN | — | — | — | — | — | — | — | — | — |
-    | `jax.nn` XLA | 0.117 | 0.856 | 1.22 | 2.80 | 6.05 | 9.93 | 21.7 | 37.1 | OOM |
+    | `jax.nn` XLA | 0.110 | 0.856 | 1.22 | 2.79 | 6.09 | 9.97 | 21.7 | 37.2 | OOM |
     | torch SDPA flash | — | — | — | — | — | — | — | — | — |
-    | torch SDPA mem-efficient | 0.240 | 1.45 | 2.01 | 4.61 | 9.39 | 16.1 | 33.4 | 60.4 | 233 |
-    | torch SDPA math | 0.542 | 1.51 | 1.96 | 5.52 | 11.1 | 20.2 | 44.0 | OOM | — |
+    | torch SDPA mem-efficient | 0.246 | 1.45 | 2.03 | 4.61 | 9.39 | 16.1 | 33.4 | 60.4 | 232 |
+    | torch SDPA math | 0.541 | 1.51 | 1.96 | 5.50 | 11.1 | 20.3 | 44.0 | OOM | — |
 
 ## Memory
 

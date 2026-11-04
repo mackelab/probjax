@@ -14,11 +14,11 @@ How probjax's kernels and models compare with the alternatives in JAX and PyTorc
 
 | workload | probjax default | ms | fastest other implementation | ms | speed-up |
 | --- | --- | ---: | --- | ---: | ---: |
-| Attention · bf16 d64 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 9.37 | torch SDPA flash | 7.78 | 0.83× |
-| Attention · bf16 d128 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 20.2 | torch SDPA flash | 15.1 | 0.74× |
-| Attention · bf16 d128 causal · fwd · T=4096 | probjax `dot_product_attention` (default) | 2.47 | torch SDPA flash | 2.23 | 0.90× |
-| Attention · fp32 d64 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 23.6 | `jax.nn` XLA | 29.3 | 1.24× |
-| Attention · bf16 d64 · fwd+bwd · T=8192 | probjax `dot_product_attention` (default) | 39.0 | torch SDPA flash | 28.8 | 0.74× |
+| Attention · bf16 d64 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 8.87 | torch SDPA flash | 7.77 | 0.88× |
+| Attention · bf16 d128 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 17.4 | torch SDPA flash | 15.1 | 0.86× |
+| Attention · bf16 d128 causal · fwd · T=4096 | probjax `dot_product_attention` (default) | 2.47 | torch SDPA flash | 2.22 | 0.90× |
+| Attention · fp32 d64 · fwd+bwd · T=4096 | probjax `dot_product_attention` (default) | 19.5 | `jax.nn` XLA | 29.2 | 1.50× |
+| Attention · bf16 d64 · fwd+bwd · T=8192 | probjax `dot_product_attention` (default) | 33.8 | torch SDPA flash | 28.6 | 0.85× |
 | GQA decoding · bf16 · B=8, 16 queries, 64k keys | probjax split-KV (default) | 4.02 | `jax.nn` cuDNN | 9.99 | 2.49× |
 | Attention on CPU · causal fwd+bwd · T=4096 | probjax `mha` (auto strategy) | 392 | torch SDPA | 101 | 0.26× |
 | SSD · fwd+bwd · L=8192 | `ssd` chunked (default) | 11.9 | `ssd` Pallas (`implementation='pallas'`) | 22.2 | 1.87× |
@@ -29,7 +29,7 @@ How probjax's kernels and models compare with the alternatives in JAX and PyTorc
 | kernel_logsumexp · fwd · N=M=16384, D=8 | `kernel_logsumexp` (Pallas) | 1.24 | dense logsumexp | 4.38 | 3.53× |
 | Sinkhorn · 50 iterations · N=M=16384 | `kernel_logsumexp` (Pallas) | 127 | dense logsumexp | 250 | 1.96× |
 | MoE · bf16 train step · 32k tokens | Pallas, sorted (GPU default) | 16.0 | blocked | 36.1 | 2.26× |
-| Transformer · bf16 train step · 4096 tokens | default `dot_product_attention` | 59.8 | `jax.nn` cuDNN | 87.4 | 1.46× |
+| Transformer · bf16 train step · 4096 tokens | default `dot_product_attention` | 50.1 | `jax.nn` cuDNN | 87.5 | 1.75× |
 
 Exact shapes are on the linked pages; ratios at other shapes differ, sometimes a lot.
 
@@ -75,7 +75,7 @@ With no `implementation` argument, the public functions dispatch as follows. "Ke
 
 ## Known limitations
 
-- **Attention:** in some bf16 configurations cuDNN or torch flash is faster than the probjax kernel (bf16 head_dim 128 fwd+bwd at T=8192: probjax 80.0 ms, cuDNN 60.7 ms); the full list is [on the attention page](gpu_attention.md#where-an-alternative-is-faster).
+- **Attention:** in some bf16 configurations cuDNN or torch flash is faster than the probjax kernel (bf16 head_dim 128 fwd+bwd at T=8192: probjax 70.9 ms, cuDNN 60.4 ms); the full list is [on the attention page](gpu_attention.md#where-an-alternative-is-faster).
 - **Attention on CPU:** torch's native SDPA kernel is faster than any XLA formulation (causal fwd+bwd T=4096: probjax 392 ms, torch 101 ms).
 - `KeyPaddingMask` gives wrong results in the attention kernel path; use `KVLenMask`.
 - The `RAttention` layer runs out of memory at 8192 tokens on a 24 GB GPU because its sliding-window attention branch is dense ([kernel page](gpu_kernels.md#residual-linear-attention-rattention)).
