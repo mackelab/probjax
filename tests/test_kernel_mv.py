@@ -238,9 +238,9 @@ def test_mamba_scan_requires_supported_backend_config():
     delta = jax.random.normal(key, (batch, seq_len, inner_dim), dtype=jnp.float32)
     d = jax.random.normal(key, (1, inner_dim), dtype=jnp.float32)
 
-    if jax.default_backend() == "cpu":
-        # No Pallas backend on CPU: the associative-scan fallback runs
-        # instead, matching the sequential reference up to reassociation.
+    if jax.default_backend() in ("cpu", "gpu"):
+        # CPU runs the chunked XLA scan; GPU runs the Triton kernels, which
+        # pad the state dimension (S=8 here) internally.
         out = compute_mamba_scan(
             x,
             a,
@@ -254,18 +254,6 @@ def test_mamba_scan_requires_supported_backend_config():
         expected = mamba_kernel_mod._mamba_scan_reference(x, a, b, c, delta, d)
         assert out.shape == (batch, seq_len, inner_dim)
         assert jnp.allclose(out, expected, atol=1e-4, rtol=1e-4)
-    elif jax.default_backend() != "tpu":
-        with pytest.raises(RuntimeError):
-            compute_mamba_scan(
-                x,
-                a,
-                b,
-                c,
-                delta,
-                d,
-                seq_tile_size=seq_tile_size,
-                dim_tile_size=dim_tile_size,
-            )
     else:
         out = compute_mamba_scan(
             x,
@@ -282,8 +270,6 @@ def test_mamba_scan_requires_supported_backend_config():
 
 def test_mamba_scan_matches_hand_rolled_recurrence():
     """The scan output satisfies h' = exp(d*a)*h + d*b*x, y = c.h + d*x."""
-    if jax.default_backend() not in ("cpu", "tpu"):
-        pytest.skip("needs a backend the mamba scan runs on")
     x = jnp.array([[[0.5, -0.25], [1.0, 0.75], [-0.5, 0.25]]], jnp.float32)
     a = jnp.array([[-0.5, -1.0], [-0.25, -0.75]], jnp.float32)
     b = jnp.array([[[1.0, 0.5], [0.25, -0.5], [0.75, 1.0]]], jnp.float32)

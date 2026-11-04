@@ -193,6 +193,10 @@ def _backward(dy, x, a, b, c, delta, d, h_entry, chunk, inner):
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(6, 7))
 def _chunked_op(x, a, b, c, delta, d, chunk, inner):
+    # Without differentiation no residuals are needed: the fused path runs
+    # as a single flat scan (one chunk spanning the sequence).
+    if inner == "fused":
+        chunk = x.shape[1]
     return _forward(x, a, b, c, delta, d, chunk, inner)[0]
 
 

@@ -257,7 +257,7 @@ def main() -> None:
             batch=BATCH,
             state=STATE,
             dtype="float32",
-            gpu_scan_config=dict(mamba_mod._GPU_SCAN_CONFIG),
+            gpu_scan_config={k: dict(v) for k, v in mamba_mod._GPU_SCAN_CONFIG.items()},
             note="rel_err = max|out-scan| / max|scan| (max over y or all grads)",
         )
         write_results(args.output, config, rows)

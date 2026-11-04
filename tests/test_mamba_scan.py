@@ -159,7 +159,8 @@ def test_gpu_dispatch_uses_pallas_kernels(monkeypatch):
 @pytest.mark.parametrize("segment", [8, 16, 48, 4096])
 def test_gpu_segment_parallel_matches_reference(monkeypatch, segment):
     """Segments (incl. a partial last one) combine to the sequential scan."""
-    monkeypatch.setitem(mamba_mod._GPU_SCAN_CONFIG, "segment", segment)
+    for direction in ("fwd", "bwd"):
+        monkeypatch.setitem(mamba_mod._GPU_SCAN_CONFIG[direction], "segment", segment)
     jax.clear_caches()
     args = _inputs(2, 100, 40, 16, seed=segment)
     fn = functools.partial(compute_mamba_scan, seq_tile_size=64, dim_tile_size=128)

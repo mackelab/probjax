@@ -841,7 +841,13 @@ def _loop_forward_pallas(
 #   the chunk's states in registers and back-propagates the cotangent.
 #
 # Tuned on an RTX 3090 (docs/scripts/benchmark_kernel_mamba.py).
-_GPU_SCAN_CONFIG = {"chunk": 8, "dim_block": 8, "num_warps": 2, "segment": 256}
+# ``chunk``: unrolled steps per loop iteration; ``dim_block``: channels per
+# program; ``segment``: steps per sequence-parallel segment. The backward keeps a chunk of states in registers, so it wants smaller
+# per-thread tiles than the forward.
+_GPU_SCAN_CONFIG = {
+    "fwd": {"chunk": 8, "dim_block": 32, "num_warps": 2, "segment": 256},
+    "bwd": {"chunk": 4, "dim_block": 32, "num_warps": 2, "segment": 256},
+}
 
 
 def _next_pow2(n: int) -> int:
@@ -871,36 +877,48 @@ def _gpu_fwd_kernel(
     mode,
 ):
     """mode: "y" (outputs), "states" (chunk-entry states), "summary" (end
-    state of the segment from a zero start)."""
+    state of the segment from a zero start).
+
+    ``b_ref`` / ``c_ref`` are time-minor ``[B, S, L]`` so that every per-step
+    operand is loaded directly in a 2-D layout that broadcasts against the
+    ``[S, dim_block]`` state ([1, dim_block] rows, [S, 1] columns) -- no
+    per-step register layout conversions.
+    """
     bi = pl.program_id(0)
     dims = pl.ds(pl.program_id(1) * dim_block, dim_block)
     seg, first, count = _segment_bounds(n_chunks, chunks_per_seg)
     a = a_ref[:, dims]
-    d_vec = d_ref[0, dims]
+    d_vec = d_ref[:, dims]
 
-    def body(i, h):
-        n = first + i
+    def load(n):
+        t0 = n * chunk
+        return tuple(
+            (
+                delta_ref[bi, pl.ds(t0 + k, 1), dims],
+                x_ref[bi, pl.ds(t0 + k, 1), dims],
+                b_ref[bi, :, pl.ds(t0 + k, 1)],
+                c_ref[bi, :, pl.ds(t0 + k, 1)] if mode == "y" else None,
+            )
+            for k in range(chunk)
+        )
+
+    def compute(n, h, loads):
         t0 = n * chunk
         if mode == "states":
             out_ref[bi, n, :, dims] = h
-        # Loads first: they do not depend on the carry and must not be
-        # ordered after the (possibly aliasing) stores of earlier steps.
-        loads = [
-            (
-                delta_ref[bi, t0 + k, dims],
-                x_ref[bi, t0 + k, dims],
-                b_ref[bi, t0 + k, :],
-                c_ref[bi, t0 + k, :] if mode == "y" else None,
-            )
-            for k in range(chunk)
-        ]
         for k, (dl, xv, bv, cv) in enumerate(loads):
-            h = jnp.exp(dl[None, :] * a) * h + (dl * xv)[None, :] * bv[:, None]
+            h = jnp.exp(dl * a) * h + (dl * xv) * bv
             if mode == "y":
-                out_ref[bi, t0 + k, dims] = (
-                    jnp.sum(cv[:, None] * h, axis=0) + d_vec * xv
+                out_ref[bi, pl.ds(t0 + k, 1), dims] = (
+                    jnp.sum(cv * h, axis=0, keepdims=True) + d_vec * xv
                 )
         return h
+
+    def body(i, h):
+        # Loads first: they do not depend on the carry and must not be
+        # ordered after the (possibly aliasing) stores of earlier steps.
+        n = first + i
+        return compute(n, h, load(n))
 
     if mode == "summary":
         h0 = jnp.zeros(a.shape, jnp.float32)
@@ -935,7 +953,7 @@ def _gpu_bwd_kernel(
     dims = pl.ds(dj * dim_block, dim_block)
     seg, first, count = _segment_bounds(n_chunks, chunks_per_seg)
     a = a_ref[:, dims]
-    d_vec = d_ref[0, dims]
+    d_vec = d_ref[:, dims]
     if summary:
         (g_out_ref,) = out_refs
     else:
@@ -948,38 +966,38 @@ def _gpu_bwd_kernel(
         t0 = n * chunk
         loads = [
             (
-                delta_ref[bi, t0 + k, dims],
-                x_ref[bi, t0 + k, dims],
-                b_ref[bi, t0 + k, :],
-                c_ref[bi, t0 + k, :],
-                dy_ref[bi, t0 + k, dims],
+                delta_ref[bi, pl.ds(t0 + k, 1), dims],
+                x_ref[bi, pl.ds(t0 + k, 1), dims],
+                b_ref[bi, :, pl.ds(t0 + k, 1)],
+                c_ref[bi, :, pl.ds(t0 + k, 1)],
+                dy_ref[bi, pl.ds(t0 + k, 1), dims],
             )
             for k in range(chunk)
         ]
         if summary:
             for dl, _, _, cv, dyv in reversed(loads):
-                g = cv[:, None] * dyv[None, :] + g_next
-                g_next = jnp.exp(dl[None, :] * a) * g
+                g = cv * dyv + g_next
+                g_next = jnp.exp(dl * a) * g
             return g_next, da
         # Recompute the chunk's states (registers) from its entry state.
         h = hs_ref[bi, n, :, dims]
         hs, ps = [h], []
         for dl, xv, bv, _, _ in loads:
-            p = jnp.exp(dl[None, :] * a)
-            h = p * h + (dl * xv)[None, :] * bv[:, None]
+            p = jnp.exp(dl * a)
+            h = p * h + (dl * xv) * bv
             ps.append(p)
             hs.append(h)
         for k in reversed(range(chunk)):
             dl, xv, bv, cv, dyv = loads[k]
-            t = t0 + k
-            g = cv[:, None] * dyv[None, :] + g_next  # dL/dh_t
+            t = pl.ds(t0 + k, 1)
+            g = cv * dyv + g_next  # dL/dh_t
             dlog = g * hs[k] * ps[k]  # dL/d(delta_t * a)
-            gb = jnp.sum(g * bv[:, None], axis=0)
-            ddelta_ref[bi, t, dims] = gb * xv + jnp.sum(dlog * a, axis=0)
+            gb = jnp.sum(g * bv, axis=0, keepdims=True)
+            ddelta_ref[bi, t, dims] = gb * xv + jnp.sum(dlog * a, axis=0, keepdims=True)
             dx_ref[bi, t, dims] = gb * dl + dyv * d_vec
-            db_ref[dj, bi, t, :] = jnp.sum(g * (dl * xv)[None, :], axis=1)
-            dc_ref[dj, bi, t, :] = jnp.sum(dyv[None, :] * hs[k + 1], axis=1)
-            da = da + dlog * dl[None, :]
+            db_ref[dj, bi, :, t] = jnp.sum(g * (dl * xv), axis=1, keepdims=True)
+            dc_ref[dj, bi, :, t] = jnp.sum(dyv * hs[k + 1], axis=1, keepdims=True)
+            da = da + dlog * dl
             g_next = ps[k] * g
         return g_next, da
 
@@ -993,7 +1011,8 @@ def _gpu_bwd_kernel(
 
 
 def _gpu_scan_pad(x, a, b, c, delta, d, *, chunk, dim_block):
-    """fp32 + pad L to ``chunk``, D to ``dim_block``, S to a power of two.
+    """fp32 + pad L to ``chunk``, D to ``dim_block``, S to a power of two;
+    ``b`` and ``c`` are returned time-minor, ``[B, S, L]``.
 
     Padded steps have delta = 0 (identity update), padded channels / states
     have zero inputs, so the padding never touches the real outputs.
@@ -1012,7 +1031,7 @@ def _gpu_scan_pad(x, a, b, c, delta, d, *, chunk, dim_block):
         a = jnp.pad(a, ((0, pad_s), (0, pad_d)))
     if pad_d:
         d = jnp.pad(d, ((0, 0), (0, pad_d)))
-    return x, a, b, c, delta, d
+    return x, a, jnp.swapaxes(b, 1, 2), jnp.swapaxes(c, 1, 2), delta, d
 
 
 def _triton_compiler_params(*, num_warps: int):
@@ -1107,7 +1126,7 @@ def _gpu_entry_states(padded, lay: _GpuLayout):
 
 
 def _gpu_scan_forward(x, a, b, c, delta, d, *, config=None):
-    cfg = dict(_GPU_SCAN_CONFIG, **(config or {}))
+    cfg = dict(_GPU_SCAN_CONFIG["fwd"], **(config or {}))
     _, seq, dim = x.shape
     padded = _gpu_scan_pad(
         x, a, b, c, delta, d, chunk=cfg["chunk"], dim_block=cfg["dim_block"]
@@ -1126,7 +1145,7 @@ def _gpu_scan_forward(x, a, b, c, delta, d, *, config=None):
 
 
 def _gpu_scan_backward(dy, x, a, b, c, delta, d, *, config=None):
-    cfg = dict(_GPU_SCAN_CONFIG, **(config or {}))
+    cfg = dict(_GPU_SCAN_CONFIG["bwd"], **(config or {}))
     batch, seq, dim = x.shape
     state = a.shape[0]
     padded = _gpu_scan_pad(
@@ -1193,8 +1212,8 @@ def _gpu_scan_backward(dy, x, a, b, c, delta, d, *, config=None):
     return (
         dx[:, :seq, :dim].astype(x.dtype),
         jnp.sum(da, axis=(0, 1))[:state, :dim].astype(a.dtype),
-        jnp.sum(db, axis=0)[:, :seq, :state].astype(b.dtype),
-        jnp.sum(dc, axis=0)[:, :seq, :state].astype(c.dtype),
+        jnp.swapaxes(jnp.sum(db, axis=0), 1, 2)[:, :seq, :state].astype(b.dtype),
+        jnp.swapaxes(jnp.sum(dc, axis=0), 1, 2)[:, :seq, :state].astype(c.dtype),
         ddelta[:, :seq, :dim].astype(delta.dtype),
         dd.astype(d.dtype),
     )
