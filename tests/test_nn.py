@@ -537,8 +537,11 @@ def test_autoregressive_ssm_roundtrip():
     model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
     x = jax.random.normal(jax.random.key(1), (2, 6, 1))
 
-    y = model(x)
-    x_inv = model.inverse(y)
+    # Full fp32 matmuls: under TF32 the GPU autotuner may pick different
+    # algorithms for the scanned forward and the one-shot inverse (~1e-3 apart).
+    with jax.default_matmul_precision("highest"):
+        y = model(x)
+        x_inv = model.inverse(y)
 
     assert y.shape == x.shape
     assert jnp.allclose(x, x_inv, atol=1e-5, rtol=1e-5)
