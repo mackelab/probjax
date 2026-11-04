@@ -253,3 +253,23 @@ def test_explicit_preferred_element_type_still_casts():
     )
     out = blk(jnp.ones((2, 8, 8, 8), dtype=jnp.float32))
     assert out.dtype == jnp.float16
+
+
+def test_resnet_block_keeps_requested_dtype_end_to_end():
+    """bf16 blocks stay bf16: the 1x1 skip conv and GroupNorms honour ``dtype``.
+
+    They used to run in float32 (no dtype forwarded), so a bf16 UNet carried a
+    float32 residual stream (more memory, slower) between its convolutions.
+    """
+    block = ResnetBlock(64, 64, dtype=jnp.bfloat16, rngs=nnx.Rngs(0))
+    x = jnp.ones((2, 8, 8, 64), jnp.bfloat16)
+    assert block.conv1.norm(x).dtype == jnp.bfloat16
+    assert block.skip_connection(x).dtype == jnp.bfloat16
+    assert block(x).dtype == jnp.bfloat16
+    # Parameters stay float32; float32 (default) blocks are unaffected.
+    assert block.skip_connection.kernel[...].dtype == jnp.float32
+    assert ResnetBlock(64, 64, rngs=nnx.Rngs(0))(x.astype(jnp.float32)).dtype == (
+        jnp.float32
+    )
+    attn = SpatialSelfAttention(64, nnx.Rngs(0), dtype=jnp.bfloat16)
+    assert attn.norm(x).dtype == jnp.bfloat16
