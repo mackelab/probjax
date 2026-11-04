@@ -1558,12 +1558,12 @@ def flex_attention(
 
     # Score modifier gradient is handled via bias classes in pallas kernels.
 
-    # If compiling for CPU, enforce interpret mode
-    if jax.default_backend() == "cpu" or (
+    # On CPU, mha dispatches to its XLA implementation (unless interpret mode
+    # is requested explicitly), so only the GPU tile-size guard remains.
+    on_cpu = jax.default_backend() == "cpu" or (
         not isinstance(query, jax.Array) and query.device.platform == "cpu"
-    ):
-        interpret = True
-    elif (
+    )
+    if not on_cpu and (
         block_sizes.block_q_dkv < 16
         or block_sizes.block_kv_dkv < 16
         or block_sizes.block_q_dq < 16
