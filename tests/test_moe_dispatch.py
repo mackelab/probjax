@@ -146,7 +146,10 @@ def test_dispatch_with_incompatible_backend_is_rejected(impl):
 @pytest.mark.parametrize("impl", ["auto", "pallas"])
 def test_auto_and_pallas_use_the_dispatch_path(impl, monkeypatch):
     """On Hopper "auto"/"pallas" resolve to Mosaic for the sorted path; with a
-    dispatch mode set they must still run moe_swiglu_dispatch."""
+    dispatch mode set they must still run moe_swiglu_dispatch.  (On CPU "auto"
+    resolves to the chunked XLA path instead; see test_moe.py.)"""
+    if impl == "auto" and jax.default_backend() == "cpu":
+        pytest.skip("auto runs the chunked XLA path on CPU")
     import probjax.nn.layers.moe as moe
 
     calls = []

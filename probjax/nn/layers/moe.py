@@ -13,10 +13,12 @@ from flax import nnx
 from flax.typing import Initializer
 
 from probjax.nn.layers.grouped_matmul import (
+    default_chunk,
     gather_from_layout,
     grouped_backend,
     grouped_swiglu,
     make_group_layout,
+    moe_swiglu_chunked,
     moe_swiglu_dispatch,
     ragged_matmul_hopper,
     scatter_to_layout,
@@ -316,6 +318,42 @@ class ExpertSwiGLU(nnx.Module):
             None,
         )
 
+    def chunked_forward(
+        self,
+        x: Array,
+        expert_ids: Array,
+        weights: Array,
+        group_sizes: Array,
+        *,
+        chunk: int | None = None,
+    ) -> Array:
+        """Routed experts and the weighted combine in plain XLA (the CPU
+        path): ``[N, D] -> [N, D]``, the same result as :meth:`dispatch_forward`.
+
+        See :func:`~probjax.nn.layers.grouped_matmul.moe_swiglu_chunked`: a
+        loop over expert-sorted row chunks that gathers its tokens, applies
+        one expert and scatter-adds the result, so neither ``top_k`` copies
+        of ``x`` nor the ``[N * K, H]`` hidden activations are materialised.
+        """
+        self._check_rows(x)
+        w_gate, w_up, w_down = (m.kernel[...] for m in (self.gate, self.up, self.down))
+        # Like the Einsum experts: compute in ``dtype`` when given (with
+        # float32 accumulation), else in the promoted input / weight dtype.
+        cdt = self.dtype or jnp.result_type(x.dtype, w_gate.dtype)
+        if chunk is None:
+            chunk = default_chunk(expert_ids.size, self.num_experts)
+        y = moe_swiglu_chunked(
+            x.astype(cdt),
+            weights,
+            w_gate.astype(cdt),
+            w_up.astype(cdt),
+            w_down.astype(cdt),
+            expert_ids.astype(jnp.int32),
+            group_sizes.astype(jnp.int32),
+            chunk,
+        )
+        return y if self.dtype is None else y.astype(self.dtype)
+
     def _replicated_kernels(self) -> tuple[Array, Array, Array]:
         # The Pallas kernels pick each row block's expert from a global sort,
         # so they cannot run on expert-sharded weights: gather them first
@@ -378,12 +416,20 @@ class MoELayer(nnx.Module):
       ``E / top_k`` times the compute, often fastest for small ``E``.
     * ``"dropless"``: rows sorted by expert and one grouped matmul — exact
       like dense at ``top_k`` experts per token. ``dropless_impl="auto"``
-      uses the Pallas grouped-GEMM kernel on GPU, ``"blocked"`` (a batched
-      matmul over expert-aligned row blocks) on CPU and ``ragged_dot``
-      elsewhere; ``"pallas"`` is that kernel with its per-GPU choice (Mosaic
-      on Hopper, Triton otherwise), ``"triton"`` / ``"mosaic"`` force one (on an A100 ``ragged_dot`` took 134 ms fwd+bwd per layer at
-      65k tokens, slower than dense at 74 ms; see
-      :mod:`probjax.nn.layers.grouped_matmul`).
+      uses the Pallas grouped-GEMM kernel on GPU, ``"chunked"`` on CPU and
+      ``ragged_dot`` elsewhere.  ``"pallas"`` is that kernel with its per-GPU
+      choice (Mosaic on Hopper, Triton otherwise), ``"triton"`` /
+      ``"mosaic"`` force one (on an A100 ``ragged_dot`` took 134 ms fwd+bwd
+      per layer at 65k tokens, slower than dense at 74 ms; see
+      :mod:`probjax.nn.layers.grouped_matmul`).  ``"chunked"`` is a plain-XLA
+      loop over expert-sorted row chunks that gathers its tokens and
+      scatter-adds the result (no ``top_k`` copies of ``x``, no
+      ``[N * K, H]`` activations, weights read in place); ``"blocked"`` is a
+      batched matmul over expert-aligned row blocks that gathers one weight
+      copy per block.  Neither ever runs Pallas interpret mode; on CPU
+      ``"chunked"`` is the fastest and smallest dropless path from 1k tokens up (see
+      ``docs/benchmarks/kernel_gmm_cpu.json``).  ``dropless_dispatch`` only
+      affects the Pallas paths, so ``"auto"`` on CPU ignores it.
 
     ``shared_hidden`` adds a DeepSeekMoE-style shared expert: a dense
     :class:`SwiGLU` of that width which every token passes through, added to
@@ -412,10 +458,12 @@ class MoELayer(nnx.Module):
         sparse: bool = True,
         routing: Literal["capacity", "dense", "dropless"] | None = None,
         dropless_impl: Literal[
-            "auto", "pallas", "triton", "mosaic", "blocked", "ragged_dot"
+            "auto", "pallas", "triton", "mosaic", "blocked", "chunked", "ragged_dot"
         ] = "auto",
         shared_hidden: int | None = None,
-        dropless_dispatch: Literal["sorted", "gather", "fused", "fused_gsum"] = "sorted",
+        dropless_dispatch: Literal[
+            "sorted", "gather", "fused", "fused_gsum"
+        ] = "sorted",
         kernel_init: Initializer = _expert_init,
         router_init: Initializer = nnx.initializers.lecun_normal(),
         dtype: DTypeLike | None = None,
@@ -442,6 +490,7 @@ class MoELayer(nnx.Module):
             "triton",
             "mosaic",
             "blocked",
+            "chunked",
             "ragged_dot",
         ):
             raise ValueError(f"unknown dropless_impl {dropless_impl!r}")
@@ -532,9 +581,23 @@ class MoELayer(nnx.Module):
         y = y * weights.reshape(-1)[order, None].astype(y.dtype)
         return jax.ops.segment_sum(y, tokens, num_segments=n_tokens)
 
+    def _resolved_impl(self) -> str:
+        impl = self.dropless_impl
+        if impl == "auto":
+            impl = {"gpu": "pallas", "cpu": "chunked"}.get(
+                jax.default_backend(), "ragged_dot"
+            )
+        return impl
+
     def _dropless(
         self, x: Array, expert_ids: Array, weights: Array, counts: Array
     ) -> Array:
+        impl = self._resolved_impl()
+        if impl == "chunked":
+            # The CPU path: gathers and combines inside its own loop, so the
+            # GPU-kernel ``dropless_dispatch`` choice does not apply (and
+            # "auto" never falls back to Pallas interpret mode on CPU).
+            return self.experts.chunked_forward(x, expert_ids, weights, counts)
         if self.dropless_dispatch != "sorted":
             # Always the Triton kernels (see __init__): on Hopper "auto"/"pallas"
             # would pick Mosaic, which has no gather/scatter variant.
@@ -547,11 +610,6 @@ class MoELayer(nnx.Module):
         # Each token repeated per assignment, then permuted into expert order.
         x_rep = jnp.broadcast_to(x[:, None, :], (n_tokens, self.top_k, d_model))
         x_sorted = _permute(x_rep.reshape(-1, d_model), order, inverse)
-        impl = self.dropless_impl
-        if impl == "auto":
-            impl = {"gpu": "pallas", "cpu": "blocked"}.get(
-                jax.default_backend(), "ragged_dot"
-            )
         if impl in ("pallas", "triton", "mosaic"):
             backend = None if impl == "pallas" else impl
             y_sorted = self.experts.grouped_forward(x_sorted, counts, backend=backend)
