@@ -141,7 +141,7 @@ def splitkv_forward(
     *,
     sm_scale: float,
     num_splits: int | None = None,
-    block_k: int = 64,
+    block_k: int | None = None,
     num_warps: int = 4,
     num_stages: int = 2,
     interpret: bool = False,
@@ -162,6 +162,10 @@ def splitkv_forward(
     block_r = max(16, pl.next_power_of_2(min(rows, 64)))
     row_blocks = pl.cdiv(rows, block_r)
     rows_pad = row_blocks * block_r
+    if block_k is None:
+        # Single 16-row tile (MHA / few packed rows): purely bandwidth bound,
+        # 32-key tiles are ~11% faster than 64 (RTX 3090, Lkv=64k, bf16).
+        block_k = 32 if block_r == 16 else 64
     block_k = min(block_k, max(16, pl.next_power_of_2(lkv)))
     block_d = pl.next_power_of_2(d)
     block_dv = pl.next_power_of_2(dv)
