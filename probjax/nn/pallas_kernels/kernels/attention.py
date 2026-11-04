@@ -1613,21 +1613,27 @@ _DEFAULT_BLOCK_SIZES = (128, 128, 64, 64, 64, 64)
 _ONEPASS_BACKWARD_IMPLS = ("triton_onepass", "onepass")
 # Single-pass backward defaults on small-SMEM GPUs, keyed by (dtype bytes,
 # padded head_dim): (block_q_dkv, block_kv_dkv, num_stages_bwd,
-# num_warps_bwd, min_kv_len, max_kv_len); ``None`` bounds are open. Measured
-# on an RTX 3090 (B=4, H=8, causal and not), fwd+bwd relative to the
-# two-pass default: bf16 d32 0.80-0.94x from 1024 keys (1.01-1.03x at 256,
-# hence the lower bound), bf16 d64 0.80-0.95x, bf16 d128 0.87-0.97x, fp32 d32
-# 0.79-0.99x, fp32 d64 0.82-0.99x, fp32 d128 0.83-0.96x up to 4096 keys
-# (1.06-1.12x at 8192, hence the cap).
+# num_warps_bwd, min_kv_len, max_kv_len); ``None`` bounds are open. Chosen
+# on an RTX 3090 for configurations that beat the two-pass default at every
+# measured batch x heads (32, 64, 128) and length in range; the atomic dQ
+# traffic grows with the grid, so wins at small B*H do not carry over to
+# large ones. fp32 d128 is not listed: its single-pass backward wins only
+# for small B*H (0.87-0.98x) and loses for B*H >= 64 (up to 1.10x).
 _SMALL_SMEM_ONEPASS_TUNED: dict[
     tuple[int, int], tuple[int, int, int, int, int | None, int | None]
 ] = {
-    (2, 32): (64, 64, 1, 4, 512, None),
-    (2, 64): (64, 64, 1, 4, None, None),
-    (2, 128): (64, 64, 2, 8, None, None),
+    (2, 32): (64, 128, 1, 4, None, None),
+    (2, 64): (32, 128, 1, 8, 2048, None),
+    (2, 128): (64, 64, 2, 8, 2048, None),
     (4, 32): (64, 64, 1, 4, None, None),
-    (4, 64): (16, 32, 1, 4, None, None),
-    (4, 128): (32, 32, 1, 4, None, 4096),
+    (4, 64): (32, 64, 1, 4, 1024, None),
+}
+# Tiles for an explicit ``backward_pass_impl="triton_onepass"`` where the
+# automatic choice stays two-pass (fastest measured fp32 d128 tiles).
+_SMALL_SMEM_ONEPASS_EXPLICIT: dict[
+    tuple[int, int], tuple[int, int, int, int, int | None, int | None]
+] = {
+    (4, 128): (32, 32, 1, 4, None, None),
 }
 _DEFAULT_NUM_STAGES = 2
 
@@ -1712,6 +1718,22 @@ def _estimate_bwd_smem_bytes(
     inner = max(bq_dkv, bkv_dq)
     scores = max(bq_dkv * bkv_dkv, bq_dq * bkv_dq) if dtype_bytes < 4 else 0
     return (2 * (outer + inner) * bd + scores) * dtype_bytes
+
+
+def _estimate_onepass_bwd_smem_bytes(
+    bq_dkv: int, bkv_dkv: int, bd: int, dtype_bytes: int
+) -> int:
+    """Shared memory of the single-pass backward kernel.
+
+    The two-pass dK/dV footprint (resident K/V, streamed Q/dO, the cast score
+    tile for 16-bit inputs) plus one ``[block_kv, D]`` tile in the input
+    dtype for the second layout of K that the ``dS @ K`` product needs.
+    Matches the measured requirement of the configurations that overflowed
+    on an RTX 3090 (131072 bytes for fp32 d64 64x128 and fp32 d128 32x64) and
+    admits every configuration that compiled there.
+    """
+    scores = bq_dkv * bkv_dkv * dtype_bytes if dtype_bytes < 4 else 0
+    return (2 * (bq_dkv + bkv_dkv) + bkv_dkv) * bd * dtype_bytes + scores
 
 
 def _shrink_fwd_config(bq: int, bk: int, stages: int) -> tuple[int, int, int] | None:
@@ -1872,10 +1894,35 @@ def _small_smem_onepass_config(
         != _DEFAULT_BLOCK_SIZES[2:]
     ):
         return block_sizes, backward_pass_impl
-    tuned = _SMALL_SMEM_ONEPASS_TUNED.get((dtype_bytes, _next_pow2(head_dim)))
+    bd = _next_pow2(head_dim)
+    limit = _query_triton_smem_limit()
+    budget = None if limit is None else limit - _SMEM_RESERVE
+
+    def fits(bq: int, bkv: int) -> bool:
+        return budget is None or (
+            _estimate_onepass_bwd_smem_bytes(bq, bkv, bd, dtype_bytes) <= budget
+        )
+
+    key = (dtype_bytes, bd)
+    tuned = _SMALL_SMEM_ONEPASS_TUNED.get(key)
+    if tuned is None and explicit:
+        tuned = _SMALL_SMEM_ONEPASS_EXPLICIT.get(key)
     if tuned is None:
-        return block_sizes, backward_pass_impl
+        if not explicit:
+            return block_sizes, backward_pass_impl
+        # Explicit request without a measured configuration: shrink the
+        # current tiles until the single-pass kernel fits.
+        bq, bkv = block_sizes.block_q_dkv, block_sizes.block_kv_dkv
+        while not fits(bq, bkv) and max(bq, bkv) > _MIN_TILE:
+            if bkv >= bq:
+                bkv = max(_MIN_TILE, bkv // 2)
+            else:
+                bq = max(_MIN_TILE, bq // 2)
+        tuned = (bq, bkv, block_sizes.num_stages_bwd, block_sizes.num_warps_bwd)
+        tuned = (*tuned, None, None)
     bq, bkv, stages, warps, min_kv, max_kv = tuned
+    if not fits(bq, bkv):
+        return block_sizes, backward_pass_impl
     if not explicit:
         if max_kv is not None and kv_seq_len > max_kv:
             return block_sizes, backward_pass_impl
