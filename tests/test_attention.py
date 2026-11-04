@@ -928,7 +928,9 @@ def test_cross_attention_gradients_match(batch_size, q_len, kv_len, num_heads, q
         (1, 21, 7, 2, 8),  # q > kv
     ],
 )
-@pytest.mark.parametrize("backward_impl", ["triton_fused", "triton_split"])
+@pytest.mark.parametrize(
+    "backward_impl", ["triton_fused", "triton_split", "triton_onepass"]
+)
 def test_cross_attention_backward_impl_variants(
     batch_size, q_len, kv_len, num_heads, qkv_dim, backward_impl
 ):

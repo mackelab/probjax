@@ -56,6 +56,7 @@ from ..kernel_utils.kernel_primitive import (
     make_kernel_primitive,
     shardable_kernel,
 )
+from ..kernel_utils.relaxed_atomic import RELAXED_ATOMICS_AVAILABLE, relaxed_atomic_add
 from .attention_splitkv import splitkv_attention
 from .attention_xla import use_xla_attention, xla_attention
 
@@ -171,6 +172,10 @@ class BlockSizes:
         block_kv_dkv: Block size along KV sequence length for dKV backward kernel.
         block_q_dq: Block size along Q sequence length for dQ backward kernel.
         block_kv_dq: Block size along KV sequence length for dQ backward kernel.
+        num_warps_bwd: ``num_warps`` of the backward kernels (``None``: the
+            call's ``num_warps``).
+        num_stages_bwd: ``num_stages`` of the backward kernels (``None``: the
+            call's ``num_stages``).
     """
 
     block_q: int = 128
@@ -180,6 +185,11 @@ class BlockSizes:
     block_kv_dkv: int = 64
     block_q_dq: int = 64
     block_kv_dq: int = 64
+
+    # Backward-only launch parameters; ``None`` uses the call's
+    # ``num_warps`` / ``num_stages`` (shared with the forward kernel).
+    num_warps_bwd: int | None = None
+    num_stages_bwd: int | None = None
 
     @classmethod
     def _should_use_split_backward(
@@ -353,6 +363,8 @@ class BlockSizes:
             self.block_kv_dkv,
             self.block_q_dq,
             self.block_kv_dq,
+            self.num_warps_bwd,
+            self.num_stages_bwd,
         )
         return (), aux
 
@@ -1203,8 +1215,16 @@ def mha_backward_kernel_split_dkdv(
     block_kv_dkv: int,
     block_d: int,
     head_dim: int,
+    dq_acc_ref: jax.Array | None = None,
+    dq_atomic: bool = True,
 ):
-    """Computes dK and dV in a dedicated pass iterating over Q blocks."""
+    """Computes dK and dV in a dedicated pass iterating over Q blocks.
+
+    With ``dq_acc_ref`` (a float32 ``[Lq, D]`` buffer, zero-initialized) the
+    kernel also adds each tile's ``dS @ K`` to it atomically: the single-pass
+    (FlashAttention-2 style) backward, which computes ``Q K^T`` and
+    ``dO V^T`` once per tile instead of once per pass.
+    """
     q_seq_len = q_ref.shape[0]
     block_mask = jnp.arange(block_d)[None] < head_dim
     start_b = pl.program_id(0)
@@ -1228,7 +1248,16 @@ def mha_backward_kernel_split_dkdv(
 
     LOG2E = 1.4426950408889634
 
+    num_q_blocks = pl.cdiv(q_seq_len, block_q_dkv)
+
     def inner_loop(start_q, carry):
+        if dq_acc_ref is not None:
+            # Stagger the Q order across KV-block programs so concurrent
+            # programs add dQ into different tiles (less atomic contention).
+            if index_offset_size_ref is not None:
+                start_q = (start_q + start_k) % index_offset_size_ref[...]
+            else:
+                start_q = (start_q + start_k) % num_q_blocks
         if index_offset_ref is not None:
             start_q = jnp.sum(pallas_load(index_offset_ref, (pl.dslice(start_q, 1),)))
         span_q = start_q * block_q_dkv + jnp.arange(block_q_dkv)
@@ -1292,7 +1321,19 @@ def mha_backward_kernel_split_dkdv(
                 0.0,
             )
             ds = ds * grad_mod
-        dk_acc = dk_acc + dot(ds.astype(q_ref.dtype).T, q)
+        ds_c = ds.astype(q_ref.dtype)
+        dk_acc = dk_acc + dot(ds_c.T, q)
+        if dq_acc_ref is not None:
+            row_mask = (span_q < q_seq_len)[:, None] & block_mask
+            dq_tile = dot(ds_c, k).astype(jnp.float32)
+            dq_idx = (curr_q_slice, slice(None))
+            if dq_atomic:
+                relaxed_atomic_add(dq_acc_ref, dq_idx, dq_tile, mask=row_mask)
+            else:
+                # Interpret mode runs grid programs sequentially and has no
+                # masked atomics: a read-modify-write is equivalent there.
+                prev = pallas_load(dq_acc_ref, dq_idx, mask=row_mask, other=0.0)
+                pallas_store(dq_acc_ref, dq_idx, val=prev + dq_tile, mask=row_mask)
         return dv_acc, dk_acc
 
     if index_offset_size_ref is not None:
@@ -1305,6 +1346,18 @@ def mha_backward_kernel_split_dkdv(
     )
     pallas_store(
         dk_ref, (slice(None), slice(None)), val=dk.astype(dk_ref.dtype), mask=block_mask
+    )
+
+
+def mha_backward_kernel_onepass(*refs, **kwargs):
+    """Single-pass backward: dK/dV per KV block, dQ by atomic accumulation.
+
+    Same inputs as :func:`mha_backward_kernel_split_dkdv` plus a trailing
+    zero-initialized float32 dQ buffer aliased to the third output.
+    """
+    *inputs, _dq_in, dk_ref, dv_ref, dq_ref = refs
+    return mha_backward_kernel_split_dkdv(
+        *inputs, dk_ref, dv_ref, dq_acc_ref=dq_ref, **kwargs
     )
 
 
@@ -1557,6 +1610,21 @@ _SMALL_SMEM_TUNED: dict[tuple[int, int], tuple[int, int, int, int, int, int | No
     (4, 128): (64, 32, 64, 32, 1, 4),
 }
 _DEFAULT_BLOCK_SIZES = (128, 128, 64, 64, 64, 64)
+_ONEPASS_BACKWARD_IMPLS = ("triton_onepass", "onepass")
+# Single-pass backward defaults on small-SMEM GPUs, keyed by (dtype bytes,
+# padded head_dim): (block_q_dkv, block_kv_dkv, num_stages_bwd,
+# num_warps_bwd, max_kv_len or None). Measured on an RTX 3090 (B=4, H=8,
+# T=512..8192, causal and not): fwd+bwd 0.80-0.95x of the two-pass default
+# for bf16 d64, 0.87-0.97x bf16 d128, 0.82-0.99x fp32 d64, 0.83-0.96x fp32
+# d128 up to 4096 keys (1.06-1.12x at 8192, hence the cap).
+_SMALL_SMEM_ONEPASS_TUNED: dict[
+    tuple[int, int], tuple[int, int, int, int, int | None]
+] = {
+    (2, 64): (64, 64, 1, 4, None),
+    (2, 128): (64, 64, 2, 8, None),
+    (4, 64): (16, 32, 1, 4, None),
+    (4, 128): (32, 32, 1, 4, 4096),
+}
 _DEFAULT_NUM_STAGES = 2
 
 
@@ -1754,8 +1822,72 @@ def _adjust_block_sizes_for_smem(
     # never growing beyond the request.
     new = (bq, bk, bq_dkv, bkv_dkv, bq_dq, bkv_dq)
     return (
-        BlockSizes(*(min(r, max(n, _MIN_TILE)) for r, n in zip(req, new, strict=True))),
+        BlockSizes(
+            *(min(r, max(n, _MIN_TILE)) for r, n in zip(req, new, strict=True)),
+            num_warps_bwd=block_sizes.num_warps_bwd,
+            num_stages_bwd=block_sizes.num_stages_bwd,
+        ),
         stages,
+    )
+
+
+def _small_smem_onepass_config(
+    block_sizes: BlockSizes,
+    requested: BlockSizes,
+    num_stages: int,
+    num_warps: int | None,
+    backward_pass_impl: str,
+    *,
+    q_seq_len: int,
+    kv_seq_len: int,
+    head_dim: int,
+    dtype_bytes: int,
+) -> tuple[BlockSizes, str]:
+    """Default calls on small-SMEM GPUs use the tuned single-pass backward.
+
+    With ``backward_pass_impl="auto"``: only when the backward tiles and
+    launch parameters are at their defaults, the lengths are not strongly
+    asymmetric (where the split backward is chosen), the KV length is within
+    the measured range and relaxed atomics are available. An explicit
+    ``"triton_onepass"`` with default tiles gets the tuned tiles as well.
+    """
+    explicit = backward_pass_impl in _ONEPASS_BACKWARD_IMPLS
+    if (
+        (backward_pass_impl != "auto" and not explicit)
+        or not RELAXED_ATOMICS_AVAILABLE
+        or num_warps is not None
+        or num_stages != _DEFAULT_NUM_STAGES
+        or requested.num_warps_bwd is not None
+        or requested.num_stages_bwd is not None
+        or (
+            requested.block_q_dkv,
+            requested.block_kv_dkv,
+            requested.block_q_dq,
+            requested.block_kv_dq,
+        )
+        != _DEFAULT_BLOCK_SIZES[2:]
+    ):
+        return block_sizes, backward_pass_impl
+    tuned = _SMALL_SMEM_ONEPASS_TUNED.get((dtype_bytes, _next_pow2(head_dim)))
+    if tuned is None:
+        return block_sizes, backward_pass_impl
+    bq, bkv, stages, warps, max_kv = tuned
+    if not explicit:
+        if max_kv is not None and kv_seq_len > max_kv:
+            return block_sizes, backward_pass_impl
+        if BlockSizes._should_use_split_backward(q_seq_len, kv_seq_len, bq, bkv):
+            return block_sizes, backward_pass_impl
+    return (
+        dataclasses.replace(
+            block_sizes,
+            block_q_dkv=bq,
+            block_kv_dkv=bkv,
+            block_q_dq=bq,
+            block_kv_dq=bkv,
+            num_stages_bwd=stages,
+            num_warps_bwd=warps,
+        ),
+        "triton_onepass",
     )
 
 
@@ -2551,13 +2683,18 @@ def mha(
     )
     factory = _make_mha_forward_jvp if force_forward_mode else _make_mha_custom_vjp
 
-    def _build_inner(bs: BlockSizes, st: int, warps: int | None = num_warps):
+    def _build_inner(
+        bs: BlockSizes,
+        st: int,
+        warps: int | None = num_warps,
+        bwd_impl: str = backward_pass_impl,
+    ):
         return factory(
             mask_treedef=mask_treedef,
             bias_treedef=bias_treedef,
             sm_scale=sm_scale,
             block_sizes=bs,
-            backward_pass_impl=backward_pass_impl,
+            backward_pass_impl=bwd_impl,
             num_warps=warps,
             num_stages=st,
             grid=grid,
@@ -2602,6 +2739,21 @@ def mha(
             return (block_sizes, num_stages)
 
     start_bs, start_st = _maybe_proactive()
+    start_impl = backward_pass_impl
+    try:
+        start_bs, start_impl = _small_smem_onepass_config(
+            start_bs,
+            block_sizes,
+            num_stages,
+            num_warps,
+            backward_pass_impl,
+            q_seq_len=int(q.shape[-3]),
+            kv_seq_len=int(k.shape[-3]),
+            head_dim=int(q.shape[-1]),
+            dtype_bytes=int(jnp.dtype(q.dtype).itemsize),
+        )
+    except Exception:
+        start_impl = backward_pass_impl
     try:
         start_warps = _small_smem_num_warps(
             num_warps,
@@ -2627,14 +2779,14 @@ def mha(
     # proactive config above is the best we can do there. For eager execution
     # we can also retry with smaller tiles on RESOURCE_EXHAUSTED.
     if not eager:
-        return _build_inner(start_bs, start_st, start_warps)(
+        return _build_inner(start_bs, start_st, start_warps, start_impl)(
             q, k, v, rng, mask_leaves, bias_leaves
         )
 
     last_exc: BaseException | None = None
     for attempt_bs, attempt_st in _iter_smaller_block_configs(start_bs, start_st):
         try:
-            out = _build_inner(attempt_bs, attempt_st, start_warps)(
+            out = _build_inner(attempt_bs, attempt_st, start_warps, start_impl)(
                 q, k, v, rng, mask_leaves, bias_leaves
             )
             # Force synchronization so async compilation/runtime errors surface
@@ -3227,6 +3379,10 @@ def _mha_backward_raw(
     block_kv_dkv = min(block_sizes.block_kv_dkv, kv_seq_len)
     block_q_dq = min(block_sizes.block_q_dq, q_seq_len)
     block_kv_dq = min(block_sizes.block_kv_dq, kv_seq_len)
+    if block_sizes.num_stages_bwd is not None:
+        num_stages = block_sizes.num_stages_bwd
+    if block_sizes.num_warps_bwd is not None:
+        num_warps = block_sizes.num_warps_bwd
     effective_num_stages = _resolve_attention_num_stages(
         num_stages, has_dense_bias=b_data is not None
     )
@@ -3390,6 +3546,112 @@ def _mha_backward_raw(
             kv_index_offset,
             kv_index_offset_size,
         )
+    elif backward_pass_impl in _ONEPASS_BACKWARD_IMPLS:
+        if not block_sizes.has_backward_blocks:
+            raise ValueError("Backward block sizes must all be set.")
+        in_specs = [
+            pl.BlockSpec(
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
+            ),
+            pl.BlockSpec(
+                (None, kv_seq_len, None, block_d),
+                lambda i, j, _: (i, 0, j // group, 0),
+            ),
+            q_data_spec if q_data is not None else None,
+            k_data_spec if q_data is not None else None,
+            b_spec_bwd if b_data is not None else None,
+            (
+                None
+                if dropout_mask is None
+                else pl.BlockSpec(
+                    (None, None, q_seq_len, kv_seq_len),
+                    lambda i, j, _: (i, j, 0, 0),
+                )
+            ),
+            pl.BlockSpec((), lambda *_: ()),
+            pl.BlockSpec(
+                (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+            ),
+            pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
+            pl.BlockSpec((None, None, q_seq_len), lambda i, j, _: (i, j, 0)),
+            None,
+            None,
+        ]
+        if kv_index_offset is not None:
+            num_q_blocks_dkdv = pl.cdiv(q_seq_len, block_q_dkv)
+            in_specs[-2] = pl.BlockSpec(
+                index_map=(lambda i, _, k: (k, 0)),
+                block_shape=((None, num_q_blocks_dkdv)),
+            )
+            in_specs[-1] = pl.BlockSpec(
+                index_map=(lambda i, _, k: k), block_shape=((None,))
+            )
+        dq_spec = pl.BlockSpec(
+            (None, q_seq_len, None, block_d), lambda i, j, _: (i, 0, j, 0)
+        )
+        in_specs.append(dq_spec)
+        onepass_args = (
+            q,
+            k,
+            v,
+            q_data,
+            k_data,
+            b_data,
+            dropout_mask,
+            rng_seed,
+            do,
+            lse,
+            delta,
+            kv_index_offset,
+            kv_index_offset_size,
+            jnp.zeros(q.shape, jnp.float32),
+        )
+        # None inputs are empty pytrees: alias by position among the arrays.
+        dq_input_index = sum(a is not None for a in onepass_args[:-1])
+        dk, dv, dq = pl.pallas_call(
+            functools.partial(
+                mha_backward_kernel_onepass,
+                dq_atomic=not interpret,
+                sm_scale=sm_scale,
+                mask_fn=mask_fn,
+                bias_fn=bias_fn,
+                bias_fn_grad=bias_fn_grad,
+                dropout_rate=dropout_rate,
+                block_q_dkv=block_q_dkv,
+                block_kv_dkv=block_kv_dkv,
+                block_d=block_d,
+                head_dim=head_dim,
+            ),
+            out_shape=[
+                jax.ShapeDtypeStruct(dkv_shape, k.dtype),
+                jax.ShapeDtypeStruct(dkv_shape, v.dtype),
+                jax.ShapeDtypeStruct(q.shape, jnp.float32),
+            ],
+            in_specs=in_specs,
+            grid=(batch_size, num_heads, pl.cdiv(kv_seq_len, block_kv_dkv)),
+            out_specs=[
+                pl.BlockSpec(
+                    (None, block_kv_dkv, None, head_dim),
+                    lambda i, j, k: (i, k, j, 0),
+                ),
+                pl.BlockSpec(
+                    (None, block_kv_dkv, None, head_dim),
+                    lambda i, j, k: (i, k, j, 0),
+                ),
+                dq_spec,
+            ],
+            input_output_aliases={dq_input_index: 2},
+            name="mha_backward_onepass",
+            debug=debug,
+            interpret=interpret,
+            compiler_params=plgpu.CompilerParams(
+                num_warps=num_warps_, num_stages=effective_num_stages
+            ),
+        )(*onepass_args)
     else:
         # Split backward into two kernels: first dKdV, then dQ.
         if backward_pass_impl not in ("triton_split", "split", "triton_2pass"):

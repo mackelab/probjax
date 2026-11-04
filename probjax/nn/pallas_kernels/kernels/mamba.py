@@ -867,9 +867,11 @@ _GPU_SCAN_CONFIG_BY_STATE = (
 
 
 def _gpu_scan_config(direction: str, state_dim: int, config=None) -> dict:
-    for limit, overrides in _GPU_SCAN_CONFIG_BY_STATE:
-        if limit is None or state_dim <= limit:
-            break
+    overrides = next(
+        o
+        for limit, o in _GPU_SCAN_CONFIG_BY_STATE
+        if limit is None or state_dim <= limit
+    )
     return {**_GPU_SCAN_CONFIG[direction], **overrides[direction], **(config or {})}
 
 
