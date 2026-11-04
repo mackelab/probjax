@@ -350,10 +350,63 @@ def suite_peak(args, rows, record):
         record(base | dict(suite="peak_max_seq", max_seq_ok=max_ok))
 
 
+# ---------------------------------------------------------------------------
+# transformer suite (default attention_fn end to end)
+# ---------------------------------------------------------------------------
+
+
+def suite_transformer(args, rows, record):
+    """``Transformer`` with its default ``attention_fn`` (forward + AdamW step).
+
+    Run once from a checkout of the old code and once from the new one (same
+    runner) to get before/after numbers for the default path.
+    """
+    from flax import nnx
+
+    from docs.scripts.benchmark_gpu_nn import _bench_module
+    from probjax.nn import Transformer
+
+    for dtype_name, tokens in itertools.product(args.dtypes, args.seq_lens):
+        dtype = jnp.dtype(dtype_name)
+        meta = dict(
+            suite="transformer",
+            attention="probjax_default",
+            dtype=dtype_name,
+            tokens=tokens,
+            batch=args.batch,
+            model_dim=args.model_dim,
+        )
+
+        def build_and_run(meta=meta, tokens=tokens, dtype=dtype):
+            model = Transformer(
+                model_dim=args.model_dim,
+                num_heads=8,
+                num_layers=4,
+                attn_size=args.model_dim // 8,
+                dtype=dtype,
+                rngs=nnx.Rngs(0),
+            )
+            x = jax.random.normal(
+                jax.random.key(1), (args.batch, tokens, args.model_dim), dtype
+            )
+            sub = []
+            _bench_module(sub, meta, model, (x,), lambda m, x: m(x))
+            for row in sub:
+                record(row)
+            return {}
+
+        err = run_safely(build_and_run)
+        if err:
+            record(dict(meta, **err))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", choices=["gpu", "cpu"], default="gpu")
-    parser.add_argument("--suite", choices=["dispatch", "peak", "residuals"])
+    parser.add_argument(
+        "--suite", choices=["dispatch", "peak", "residuals", "transformer"]
+    )
+    parser.add_argument("--model-dim", type=int, default=256)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--append", action="store_true")
     parser.add_argument("--tag", default=None)
@@ -392,9 +445,13 @@ def main():
             flush=True,
         )
 
-    {"dispatch": suite_dispatch, "peak": suite_peak, "residuals": suite_residuals}[
-        args.suite
-    ](args, rows, record)
+    suites = {
+        "dispatch": suite_dispatch,
+        "peak": suite_peak,
+        "residuals": suite_residuals,
+        "transformer": suite_transformer,
+    }
+    suites[args.suite](args, rows, record)
     config = vars(args) | {"output": str(args.output)}
     write_results(args.output, config, rows)
 
