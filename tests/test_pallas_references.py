@@ -10,6 +10,7 @@ import pytest
 
 import probjax.nn.pallas_kernels as pk
 from probjax.nn.pallas_kernels.kernels.attention import BlockSizes
+from tests._tolerance import fp32_tol
 
 
 def _mha_reference(q, k, v, **kwargs):
@@ -66,7 +67,7 @@ def test_mha_forward_matches_reference(mha_inputs):
     kwargs = dict(block_sizes=_block_sizes(q.shape[1]), interpret=True)
     new = pk.mha(q, k, v, **kwargs)
     reference = _mha_reference(q, k, v, **kwargs)
-    assert jnp.allclose(new, reference, atol=1e-5)
+    assert jnp.allclose(new, reference, **fp32_tol(atol=1e-5))
 
 
 def test_mha_grad_matches_reference(mha_inputs):
@@ -82,7 +83,8 @@ def test_mha_grad_matches_reference(mha_inputs):
     grads_new = jax.grad(loss_new, argnums=(0, 1, 2))(q, k, v)
     grads_reference = jax.grad(loss_reference, argnums=(0, 1, 2))(q, k, v)
     for g_new, g_reference in zip(grads_new, grads_reference):
-        assert jnp.allclose(g_new, g_reference, atol=1e-4)
+        tol = fp32_tol(atol=1e-4, scale=jnp.abs(g_reference).max())
+        assert jnp.allclose(g_new, g_reference, **tol)
 
 
 def test_mha_jvp_matches_reference(mha_inputs):
@@ -100,9 +102,10 @@ def test_mha_jvp_matches_reference(mha_inputs):
 
     out_new, t_new = jax.jvp(f_new, (q, k, v), tangents)
     out_reference, t_reference = jax.jvp(f_reference, (q, k, v), tangents)
-    assert jnp.allclose(out_new, out_reference, atol=1e-5)
+    assert jnp.allclose(out_new, out_reference, **fp32_tol(atol=1e-5))
     assert jnp.all(jnp.isfinite(t_new))
-    assert jnp.allclose(t_new, t_reference, atol=1e-4, rtol=1e-4)
+    tol = fp32_tol(atol=1e-4, rtol=1e-4, scale=jnp.abs(t_reference).max())
+    assert jnp.allclose(t_new, t_reference, **tol)
 
 
 def test_mha_vmap_matches_reference(mha_inputs):
@@ -117,7 +120,7 @@ def test_mha_vmap_matches_reference(mha_inputs):
     reference = jnp.stack([
         _mha_reference(qs[i], ks[i], vs[i], **kwargs) for i in range(2)
     ])
-    assert jnp.allclose(new, reference, atol=1e-5)
+    assert jnp.allclose(new, reference, **fp32_tol(atol=1e-5))
 
 
 def test_kernel_mv_matches_reference():
@@ -130,7 +133,7 @@ def test_kernel_mv_matches_reference():
 
     new = pk.rbf_kernel_mv(q, k, v, lengthscale, interpret=True)
     reference = _rbf_reference(q, k, v, lengthscale, interpret=True)
-    assert jnp.allclose(new, reference, atol=1e-5)
+    assert jnp.allclose(new, reference, **fp32_tol(atol=1e-5))
 
     g_new = jax.grad(
         lambda q: jnp.sum(pk.rbf_kernel_mv(q, k, v, lengthscale, interpret=True))
@@ -138,7 +141,7 @@ def test_kernel_mv_matches_reference():
     g_reference = jax.grad(
         lambda q: jnp.sum(_rbf_reference(q, k, v, lengthscale, interpret=True))
     )(q)
-    assert jnp.allclose(g_new, g_reference, atol=1e-4)
+    assert jnp.allclose(g_new, g_reference, **fp32_tol(atol=1e-4))
 
 
 # --------------------------------------------------------------------------
@@ -151,6 +154,44 @@ def _requires_accelerator():
         pytest.skip("requires an accelerator backend")
 
 
+@pytest.mark.parametrize("seq", [48, 100, 192, 300])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("dtype", [jnp.bfloat16, jnp.float32])
+def test_mha_unaligned_seq_len_matches_reference_gpu(seq, causal, dtype):
+    """Lengths that are not a multiple of the tile used to read past K/V (NaN)."""
+    _requires_accelerator()
+    ks = jax.random.split(jax.random.key(seq), 4)
+    q, k, v = (jax.random.normal(kk, (2, seq, 2, 64), dtype) for kk in ks[:3])
+    g = jax.random.normal(ks[3], (2, seq, 2, 64))
+    mask = pk.CausalMask() if causal else None
+
+    def loss(fn, q, k, v):
+        return jnp.sum(fn(q, k, v).astype(jnp.float32) * g)
+
+    def kernel(q, k, v):
+        return pk.mha(q, k, v, mask=mask, sm_scale=0.125)
+
+    def reference(q, k, v):
+        f32 = [x.astype(jnp.float32) for x in (q, k, v)]
+        return jax.nn.dot_product_attention(*f32, scale=0.125, is_causal=causal)
+
+    out = jax.jit(kernel)(q, k, v)
+    assert out.shape == q.shape
+    tol = 2e-2 if dtype == jnp.bfloat16 else 2e-3
+    assert jnp.allclose(out.astype(jnp.float32), reference(q, k, v), atol=tol)
+    grads = jax.grad(lambda *a: loss(kernel, *a), argnums=(0, 1, 2))(q, k, v)
+    ref_grads = jax.grad(lambda *a: loss(reference, *a), argnums=(0, 1, 2))(q, k, v)
+    for got, want in zip(grads, ref_grads, strict=True):
+        scale = jnp.abs(want).max()
+        assert jnp.abs(got.astype(jnp.float32) - want).max() <= 2 * tol * scale
+
+
+def test_mha_unaligned_seq_len_rejects_data_masks():
+    q = jnp.ones((2, 300, 2, 64), jnp.float32)
+    with pytest.raises(ValueError, match="block-aligned"):
+        pk.mha(q, q, q, mask=pk.SeqLenMask(jnp.array([300, 200])), interpret=True)
+
+
 def test_ssd_matches_reference_gpu():
     _requires_accelerator()
     key = jax.random.key(0)
@@ -160,13 +201,19 @@ def test_ssd_matches_reference_gpu():
     v = jax.random.normal(ks[2], (2, 4, 256, 64))
     log_alpha = -jnp.abs(jax.random.normal(ks[3], (2, 4, 256)))
 
-    new = pk.ssd(q, k, v, log_alpha)
+    new = pk.ssd(q, k, v, log_alpha, implementation="pallas")
     reference = _ssd_reference(q, k, v, log_alpha)
-    assert jnp.allclose(new, reference, atol=1e-4)
+    # The Triton kernel uses TF32 matmuls (~5e-4 relative error): compare
+    # relative to the output scale rather than with a tight absolute atol.
+    scale = jnp.max(jnp.abs(reference))
+    assert jnp.max(jnp.abs(new - reference)) <= 5e-3 * scale
 
-    g_new = jax.grad(lambda v: jnp.sum(pk.ssd(q, k, v, log_alpha)))(v)
+    g_new = jax.grad(
+        lambda v: jnp.sum(pk.ssd(q, k, v, log_alpha, implementation="pallas"))
+    )(v)
     g_reference = jax.grad(lambda v: jnp.sum(_ssd_reference(q, k, v, log_alpha)))(v)
-    assert jnp.allclose(g_new, g_reference, atol=1e-3)
+    scale = jnp.max(jnp.abs(g_reference))
+    assert jnp.max(jnp.abs(g_new - g_reference)) <= 5e-3 * scale
 
 
 def test_mamba_matches_reference_gpu():
@@ -183,7 +230,7 @@ def test_mamba_matches_reference_gpu():
 
     new = pk.compute_mamba_scan(x, a, b, c, delta, d, seq_tile_size=32, dim_tile_size=128)
     reference = _mamba_reference(x, a, b, c, delta, d)
-    assert jnp.allclose(new, reference, atol=1e-4)
+    assert jnp.allclose(new, reference, **fp32_tol(atol=1e-4))
 
 
 @pytest.mark.mesh
@@ -210,7 +257,7 @@ def test_mha_sharded_no_allgather_mesh(axis):
 
     new = fn(qs, ks_, vs)
     reference = _mha_reference(q, k, v, **kwargs)
-    assert jnp.allclose(jax.device_get(new), reference, atol=1e-4)
+    assert jnp.allclose(jax.device_get(new), reference, **fp32_tol(atol=1e-4))
     gradient = jax.jit(
         jax.grad(
             lambda a, b, c: jnp.sum(pk.mha(a, b, c, **kwargs) ** 2), argnums=(0, 1, 2)
@@ -221,14 +268,14 @@ def test_mha_sharded_no_allgather_mesh(axis):
         lambda a, b, c: jnp.sum(_mha_reference(a, b, c) ** 2), argnums=(0, 1, 2)
     )(q, k, v)
     for actual, expected in zip(actual_grad, expected_grad):
-        assert jnp.allclose(actual, expected, atol=2e-4, rtol=1e-4)
+        assert jnp.allclose(actual, expected, **fp32_tol(atol=2e-4, rtol=1e-4))
     tangent = jax.jit(
         lambda a, b, c: jax.jvp(
             lambda x, y, z: pk.mha(x, y, z, **kwargs), (a, b, c), (a, b, c)
         )[1]
     )(qs, ks_, vs)
     expected_tangent = jax.jvp(_mha_reference, (q, k, v), (q, k, v))[1]
-    assert jnp.allclose(tangent, expected_tangent, atol=2e-4, rtol=1e-4)
+    assert jnp.allclose(tangent, expected_tangent, **fp32_tol(atol=2e-4, rtol=1e-4))
 
 
 def test_ssd_jvp_matches_reference_gpu():
@@ -254,11 +301,12 @@ def test_ssd_jvp_matches_reference_gpu():
     ssd_mod = importlib.import_module("probjax.nn.pallas_kernels.kernels.ssd")
     _, t_new = jax.jvp(ssd_mod._ssd_op, primals, tangents)
     _, t_ref = jax.jvp(ssd_reference, primals, tangents)
-    assert jnp.allclose(t_new, t_ref, atol=1e-2)
+    # TF32 kernel matmuls: tolerance relative to the output scale.
+    assert jnp.max(jnp.abs(t_new - t_ref)) <= 5e-3 * jnp.max(jnp.abs(t_ref))
 
     g_new = jax.grad(lambda v: jnp.sum(ssd_mod._ssd_op(q, k, v, la, h0)))(v)
     g_reference = jax.grad(lambda v: jnp.sum(_ssd_reference(q, k, v, la)))(v)
-    assert jnp.allclose(g_new, g_reference, atol=1e-3)
+    assert jnp.max(jnp.abs(g_new - g_reference)) <= 5e-3 * jnp.max(jnp.abs(g_reference))
 
 
 @pytest.mark.parametrize('save_residuals', [False, True])
@@ -361,9 +409,10 @@ def test_multitile_attention_jvp_with_bias_mask_dropout(causal, rate):
     expected = jax.jvp(reference, (q, k, v), tangents)
     for x, y in zip(actual, expected):
         assert jnp.all(jnp.isfinite(x))
-        assert jnp.allclose(x, y, atol=1e-5, rtol=2e-4)
+        assert jnp.allclose(x, y, **fp32_tol(atol=1e-5, rtol=2e-4))
 
 
+@pytest.mark.skipif(jax.default_backend() != "gpu", reason="needs the GPU kernels")
 @pytest.mark.parametrize("seq,dim", [(32, 128), (8, 256)])
 def test_mamba_gpu_multitile_dispatch_and_gradients(monkeypatch, seq, dim):
     """GPU tile dependencies must not rely on ordering separate programs."""
@@ -384,19 +433,20 @@ def test_mamba_gpu_multitile_dispatch_and_gradients(monkeypatch, seq, dim):
         lambda *xs: jnp.sum(mamba._mamba_scan_reference(*xs) ** 2),
         argnums=tuple(range(6)),
     )(*args)
-    monkeypatch.setattr(jax, "default_backend", lambda: "gpu")
-    monkeypatch.setattr(mamba, "_pallas_backend", lambda: "triton")
 
     def forbidden(*args, **kwargs):
         raise AssertionError("multi-tile GPU call entered the unordered carry kernel")
 
-    monkeypatch.setattr(mamba, "_mamba_scan_op", forbidden)
+    # The TPU kernels carry state across grid programs; on GPU the
+    # sequence-loop kernels must be used instead.
+    monkeypatch.setattr(mamba, "_loop_forward_pallas", forbidden)
+    monkeypatch.setattr(mamba, "_loop_backward_pallas", forbidden)
 
     def scan(*xs):
         return mamba.compute_mamba_scan(*xs, seq_tile_size=8, dim_tile_size=128)
 
-    assert jnp.allclose(scan(*args), reference, rtol=2e-5, atol=2e-5)
+    assert jnp.allclose(scan(*args), reference, **fp32_tol(atol=2e-5, rtol=2e-5))
     actual_grads = jax.grad(lambda *xs: jnp.sum(scan(*xs) ** 2), argnums=tuple(range(6)))(*args)
     for actual, expected in zip(actual_grads, reference_grads, strict=True):
         assert jnp.all(jnp.isfinite(actual))
-        assert jnp.allclose(actual, expected, rtol=2e-4, atol=2e-4)
+        assert jnp.allclose(actual, expected, **fp32_tol(atol=2e-4, rtol=2e-4))

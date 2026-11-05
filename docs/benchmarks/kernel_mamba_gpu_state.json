@@ -1,0 +1,143 @@
+{
+ "device": {
+  "jax": "0.11.2",
+  "backend": "gpu",
+  "devices": [
+   "cuda:0"
+  ],
+  "python": "3.14.8",
+  "device_kind": "NVIDIA GeForce RTX 3090",
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "driver": "615.78.08",
+  "gpu_memory_gb": 24.0,
+  "torch": "2.14.1+cu130",
+  "torch_cuda": "13.0"
+ },
+ "config": {
+  "note": "Locked A/B of compute_mamba_scan on GPU before/after 9386bfb (state-size-dependent tile configs), 3 interleaved rounds per side, medians in ms; transcribed from the A/B log. kernel_mamba_gpu.json covers state_dim=16 only.",
+  "commit": "9386bfb",
+  "rounds": 3
+ },
+ "results": [
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 16,
+   "mode": "fwd",
+   "before_ms": 0.23,
+   "after_ms": 0.21,
+   "iqr_overlap": true
+  },
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 16,
+   "mode": "bwd",
+   "before_ms": 0.57,
+   "after_ms": 0.57,
+   "iqr_overlap": true
+  },
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 64,
+   "mode": "fwd",
+   "before_ms": 6.9,
+   "after_ms": 0.44,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 64,
+   "mode": "bwd",
+   "before_ms": 8.68,
+   "after_ms": 1.27,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 128,
+   "mode": "fwd",
+   "before_ms": 8.21,
+   "after_ms": 0.92,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 8,
+   "seq": 1024,
+   "dim": 128,
+   "state": 128,
+   "mode": "bwd",
+   "before_ms": 41.61,
+   "after_ms": 6.52,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 4,
+   "seq": 2048,
+   "dim": 512,
+   "state": 64,
+   "mode": "fwd",
+   "before_ms": 26.73,
+   "after_ms": 0.98,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 4,
+   "seq": 2048,
+   "dim": 512,
+   "state": 64,
+   "mode": "bwd",
+   "before_ms": 33.63,
+   "after_ms": 3.96,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 4,
+   "seq": 2048,
+   "dim": 512,
+   "state": 128,
+   "mode": "fwd",
+   "before_ms": 28.33,
+   "after_ms": 3.22,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 4,
+   "seq": 2048,
+   "dim": 512,
+   "state": 128,
+   "mode": "bwd",
+   "before_ms": 174.36,
+   "after_ms": 26.63,
+   "iqr_overlap": false
+  },
+  {
+   "batch": 2,
+   "seq": 4096,
+   "dim": 256,
+   "state": 32,
+   "mode": "fwd",
+   "before_ms": 0.48,
+   "after_ms": 0.46,
+   "iqr_overlap": true
+  },
+  {
+   "batch": 2,
+   "seq": 4096,
+   "dim": 256,
+   "state": 32,
+   "mode": "bwd",
+   "before_ms": 1.6,
+   "after_ms": 1.54,
+   "iqr_overlap": false
+  }
+ ]
+}

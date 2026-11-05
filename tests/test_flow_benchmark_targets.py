@@ -16,7 +16,8 @@ from docs.scripts.benchmark_flow_mixing import (
 )
 
 #: The benchmark suite is long-running; skip it with ``-m 'not slow'``.
-pytestmark = pytest.mark.slow
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = [pytest.mark.slow, pytest.mark.float32_matmul]
 
 
 @pytest.mark.parametrize("name", REALISTIC_TARGETS)

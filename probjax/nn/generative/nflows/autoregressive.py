@@ -250,7 +250,11 @@ class AutoregressiveTransformer(nnx.Module):
             seq_len,
             self.transformer.model_dim,
         )
-        for block in self.transformer.attention_blocks:
+        if hasattr(self.transformer, "init_cache"):
+            # Works for both unrolled and ``scan_layers`` transformers.
+            self.transformer.init_cache(cache_input_shape, dtype=dtype)  # type: ignore
+            return
+        for block in self.transformer.attention_blocks:  # type: ignore
             block.init_cache(cache_input_shape, dtype=dtype)  # type: ignore
 
     def decode_hidden(self, token, pos, context=None, k=None, v=None, **kwargs):

@@ -26,7 +26,6 @@ from ..kernel_utils import (
 )
 from ..kernel_utils.common import (
     _bs,
-    _is_hopper_or_newer_gpu,
     _pallas_backend,
     _tpu_compiler_params,
 )
@@ -41,6 +40,7 @@ from ..kernel_utils.kernel_primitive import (
     res,
     shardable_kernel,
 )
+from .mamba_chunked import mamba_scan_chunked
 
 
 def _validate_mamba_runtime_inputs(
@@ -172,20 +172,17 @@ def _gpu_supports_mamba_pallas_for_shape(
     dim_tile_size: int,
     pallas_backend: str | None,
 ) -> bool:
-    """Cheap/static capability check for Mamba Pallas on GPU."""
+    """Cheap/static capability check for the GPU (Triton) Mamba kernels.
+
+    The GPU kernels pad L, D and S internally, so any positive shape works;
+    the tile sizes are TPU-only and are validated by the caller.
+    """
+    del seq_tile_size, dim_tile_size
     if jax.default_backend() != "gpu":
         return False
-    if pallas_backend not in ("triton", "mosaic_gpu"):
+    if pallas_backend != "triton":
         return False
-    if pallas_backend == "mosaic_gpu" and not _is_hopper_or_newer_gpu():
-        return False
-    if pallas_backend == "triton" and state_dim < 16:
-        return False
-    if seq_len <= 0 or inner_dim <= 0 or state_dim <= 0:
-        return False
-    if seq_tile_size <= 0 or seq_tile_size % 8 != 0:
-        return False
-    return not (dim_tile_size <= 0 or dim_tile_size % 128 != 0)
+    return seq_len > 0 and inner_dim > 0 and state_dim > 0
 
 
 # pylint: disable=invalid-name
@@ -822,6 +819,432 @@ def _loop_forward_pallas(
 
 
 # ---------------------------------------------------------------------------
+# GPU (Triton) kernels: sequence loop per (batch, channel block, segment)
+# ---------------------------------------------------------------------------
+# The TPU kernels above carry the state across the sequence grid axis, which
+# relies on TPU's sequential grid execution; Triton programs run concurrently,
+# so on GPU every program walks its own stretch of the sequence. The
+# [S, dim_block] state lives in registers; the loop is unrolled over ``chunk``
+# time steps whose loads are issued up front (independent of the carry).
+#
+# The loop is latency bound (one dependent update per step), so the sequence
+# is split into ``G`` segments of ``segment`` steps processed in parallel:
+# a summary pass computes each segment's end state from a zero start, a tiny
+# XLA scan over G combines them using the segment decay
+# exp(a * sum(delta)), and the main pass re-runs each segment from its true
+# entry state. The backward does the same for the state cotangent (reverse
+# direction). Nothing of size [B, L, S, D] is ever written:
+#
+# * forward: reads x, delta, b, c, writes y (+ [B, G, S, D] summaries).
+# * backward: a states pass writes the chunk-entry states [B, L/chunk, S, D];
+#   the backward kernel walks each segment's chunks in reverse, recomputes
+#   the chunk's states in registers and back-propagates the cotangent.
+#
+# Tuned on an RTX 3090 (docs/scripts/benchmark_kernel_mamba.py).
+# ``chunk``: unrolled steps per loop iteration; ``dim_block``: channels per
+# program; ``segment``: steps per sequence-parallel segment. The backward keeps a chunk of states in registers, so it wants smaller
+# per-thread tiles than the forward.
+_GPU_SCAN_CONFIG = {
+    "fwd": {"chunk": 8, "dim_block": 32, "num_warps": 2, "segment": 256},
+    "bwd": {"chunk": 4, "dim_block": 32, "num_warps": 2, "segment": 256},
+}
+
+# Per-program state is [state_dim, dim_block] fp32 in registers. The defaults
+# above are tuned for state_dim <= 16 and spill badly beyond it (RTX 3090,
+# B8 L1024 D128: S=64 fwd 7.0 ms / bwd 28 ms, S=128 fwd 8.3 / bwd 48 ms with
+# the defaults vs 0.44 / 1.3 and 0.91 / 6.6 ms with these overrides).
+_GPU_SCAN_CONFIG_BY_STATE = (
+    (16, {"fwd": {}, "bwd": {}}),
+    (64, {
+        "fwd": {"chunk": 4, "dim_block": 32, "num_warps": 4},
+        "bwd": {"chunk": 4, "dim_block": 16, "num_warps": 4},
+    }),
+    (None, {
+        "fwd": {"chunk": 4, "dim_block": 16, "num_warps": 2},
+        "bwd": {"chunk": 8, "dim_block": 4, "num_warps": 4},
+    }),
+)
+
+
+def _gpu_scan_config(direction: str, state_dim: int, config=None) -> dict:
+    overrides = next(
+        o
+        for limit, o in _GPU_SCAN_CONFIG_BY_STATE
+        if limit is None or state_dim <= limit
+    )
+    return {**_GPU_SCAN_CONFIG[direction], **overrides[direction], **(config or {})}
+
+
+def _next_pow2(n: int) -> int:
+    return 1 << max(0, (int(n) - 1).bit_length())
+
+
+def _segment_bounds(n_chunks, chunks_per_seg):
+    seg = pl.program_id(2)
+    first = seg * chunks_per_seg
+    return seg, first, jnp.minimum(chunks_per_seg, n_chunks - first)
+
+
+def _gpu_fwd_kernel(
+    x_ref,
+    a_ref,
+    b_ref,
+    c_ref,
+    delta_ref,
+    d_ref,
+    h_init_ref,
+    out_ref,
+    *,
+    chunk,
+    dim_block,
+    n_chunks,
+    chunks_per_seg,
+    mode,
+):
+    """mode: "y" (outputs), "states" (chunk-entry states), "summary" (end
+    state of the segment from a zero start).
+
+    ``b_ref`` / ``c_ref`` are time-minor ``[B, S, L]`` so that every per-step
+    operand is loaded directly in a 2-D layout that broadcasts against the
+    ``[S, dim_block]`` state ([1, dim_block] rows, [S, 1] columns) -- no
+    per-step register layout conversions.
+    """
+    bi = pl.program_id(0)
+    dims = pl.ds(pl.program_id(1) * dim_block, dim_block)
+    seg, first, count = _segment_bounds(n_chunks, chunks_per_seg)
+    a = a_ref[:, dims]
+    d_vec = d_ref[:, dims]
+
+    def load(n):
+        t0 = n * chunk
+        return tuple(
+            (
+                delta_ref[bi, pl.ds(t0 + k, 1), dims],
+                x_ref[bi, pl.ds(t0 + k, 1), dims],
+                b_ref[bi, :, pl.ds(t0 + k, 1)],
+                c_ref[bi, :, pl.ds(t0 + k, 1)] if mode == "y" else None,
+            )
+            for k in range(chunk)
+        )
+
+    def compute(n, h, loads):
+        t0 = n * chunk
+        if mode == "states":
+            out_ref[bi, n, :, dims] = h
+        for k, (dl, xv, bv, cv) in enumerate(loads):
+            h = jnp.exp(dl * a) * h + (dl * xv) * bv
+            if mode == "y":
+                out_ref[bi, pl.ds(t0 + k, 1), dims] = (
+                    jnp.sum(cv * h, axis=0, keepdims=True) + d_vec * xv
+                )
+        return h
+
+    def body(i, h):
+        # Loads first: they do not depend on the carry and must not be
+        # ordered after the (possibly aliasing) stores of earlier steps.
+        n = first + i
+        return compute(n, h, load(n))
+
+    if mode == "summary":
+        h0 = jnp.zeros(a.shape, jnp.float32)
+    else:
+        h0 = h_init_ref[bi, seg, :, dims]
+    h = lax.fori_loop(0, count, body, h0)
+    if mode == "summary":
+        out_ref[bi, seg, :, dims] = h
+
+
+def _gpu_bwd_kernel(
+    dy_ref,
+    x_ref,
+    a_ref,
+    b_ref,
+    c_ref,
+    delta_ref,
+    d_ref,
+    hs_ref,
+    g_init_ref,
+    *out_refs,
+    chunk,
+    dim_block,
+    n_chunks,
+    chunks_per_seg,
+    summary,
+):
+    """Reverse walk over one segment. ``summary``: only the outgoing state
+    cotangent from a zero carry-in (no states needed); otherwise all grads."""
+    bi = pl.program_id(0)
+    dj = pl.program_id(1)
+    dims = pl.ds(dj * dim_block, dim_block)
+    seg, first, count = _segment_bounds(n_chunks, chunks_per_seg)
+    a = a_ref[:, dims]
+    d_vec = d_ref[:, dims]
+    if summary:
+        (g_out_ref,) = out_refs
+    else:
+        dx_ref, ddelta_ref, db_ref, dc_ref, da_ref = out_refs
+
+    def body(i, carry):
+        # g_next: cotangent reaching h_t from step t+1 (= p_{t+1} * g_{t+1}).
+        g_next, da = carry
+        n = first + count - 1 - i
+        t0 = n * chunk
+        loads = [
+            (
+                delta_ref[bi, pl.ds(t0 + k, 1), dims],
+                x_ref[bi, pl.ds(t0 + k, 1), dims],
+                b_ref[bi, :, pl.ds(t0 + k, 1)],
+                c_ref[bi, :, pl.ds(t0 + k, 1)],
+                dy_ref[bi, pl.ds(t0 + k, 1), dims],
+            )
+            for k in range(chunk)
+        ]
+        if summary:
+            for dl, _, _, cv, dyv in reversed(loads):
+                g = cv * dyv + g_next
+                g_next = jnp.exp(dl * a) * g
+            return g_next, da
+        # Recompute the chunk's states (registers) from its entry state.
+        h = hs_ref[bi, n, :, dims]
+        hs, ps = [h], []
+        for dl, xv, bv, _, _ in loads:
+            p = jnp.exp(dl * a)
+            h = p * h + (dl * xv) * bv
+            ps.append(p)
+            hs.append(h)
+        for k in reversed(range(chunk)):
+            dl, xv, bv, cv, dyv = loads[k]
+            t = pl.ds(t0 + k, 1)
+            g = cv * dyv + g_next  # dL/dh_t
+            dlog = g * hs[k] * ps[k]  # dL/d(delta_t * a)
+            gb = jnp.sum(g * bv, axis=0, keepdims=True)
+            ddelta_ref[bi, t, dims] = gb * xv + jnp.sum(dlog * a, axis=0, keepdims=True)
+            dx_ref[bi, t, dims] = gb * dl + dyv * d_vec
+            db_ref[dj, bi, :, t] = jnp.sum(g * (dl * xv), axis=1, keepdims=True)
+            dc_ref[dj, bi, :, t] = jnp.sum(dyv * hs[k + 1], axis=1, keepdims=True)
+            da = da + dlog * dl
+            g_next = ps[k] * g
+        return g_next, da
+
+    zeros = jnp.zeros(a.shape, jnp.float32)
+    g0 = zeros if summary else g_init_ref[bi, seg, :, dims]
+    g_out, da = lax.fori_loop(0, count, body, (g0, zeros))
+    if summary:
+        g_out_ref[bi, seg, :, dims] = g_out
+    else:
+        da_ref[bi, seg, :, dims] = da
+
+
+def _gpu_scan_pad(x, a, b, c, delta, d, *, chunk, dim_block):
+    """fp32 + pad L to ``chunk``, D to ``dim_block``, S to a power of two;
+    ``b`` and ``c`` are returned time-minor, ``[B, S, L]``.
+
+    Padded steps have delta = 0 (identity update), padded channels / states
+    have zero inputs, so the padding never touches the real outputs.
+    """
+    _, seq, dim = x.shape
+    state = a.shape[0]
+    x, a, b, c, delta, d = (v.astype(jnp.float32) for v in (x, a, b, c, delta, d))
+    pad_l = (-seq) % chunk
+    pad_d = (-dim) % dim_block
+    pad_s = _next_pow2(state) - state
+    if pad_l or pad_d:
+        x, delta = (jnp.pad(v, ((0, 0), (0, pad_l), (0, pad_d))) for v in (x, delta))
+    if pad_l or pad_s:
+        b, c = (jnp.pad(v, ((0, 0), (0, pad_l), (0, pad_s))) for v in (b, c))
+    if pad_d or pad_s:
+        a = jnp.pad(a, ((0, pad_s), (0, pad_d)))
+    if pad_d:
+        d = jnp.pad(d, ((0, 0), (0, pad_d)))
+    return x, a, jnp.swapaxes(b, 1, 2), jnp.swapaxes(c, 1, 2), delta, d
+
+
+def _triton_compiler_params(*, num_warps: int):
+    from jax.experimental.pallas import triton as plgpu
+
+    return plgpu.CompilerParams(num_warps=num_warps, num_stages=1)
+
+
+class _GpuLayout(NamedTuple):
+    chunk: int
+    dim_block: int
+    num_warps: int
+    n_chunks: int
+    chunks_per_seg: int
+    n_seg: int
+    n_dim: int
+
+
+def _gpu_layout(xp, cfg) -> _GpuLayout:
+    chunk = cfg["chunk"]
+    n_chunks = xp.shape[1] // chunk
+    chunks_per_seg = max(1, min(n_chunks, cfg["segment"] // chunk))
+    return _GpuLayout(
+        chunk=chunk,
+        dim_block=cfg["dim_block"],
+        num_warps=cfg["num_warps"],
+        n_chunks=n_chunks,
+        chunks_per_seg=chunks_per_seg,
+        n_seg=-(-n_chunks // chunks_per_seg),
+        n_dim=xp.shape[2] // cfg["dim_block"],
+    )
+
+
+def _gpu_call(kernel, lay: _GpuLayout, out_shape, *args, **static):
+    return pallas_call_compat(
+        functools.partial(
+            kernel,
+            chunk=lay.chunk,
+            dim_block=lay.dim_block,
+            n_chunks=lay.n_chunks,
+            chunks_per_seg=lay.chunks_per_seg,
+            **static,
+        ),
+        grid=(args[0].shape[0], lay.n_dim, lay.n_seg),
+        out_shape=out_shape,
+        compiler_params=_triton_compiler_params(num_warps=lay.num_warps),
+        backend=_pallas_backend(),
+        interpret=use_interpret_mode(),
+    )(*args)
+
+
+def _segment_decay(ap, deltap, lay: _GpuLayout):
+    """exp(a * sum_{t in segment} delta_t): [B, G, S, D]."""
+    batch, seq, dim = deltap.shape
+    seg_len = lay.chunks_per_seg * lay.chunk
+    padded = jnp.pad(deltap, ((0, 0), (0, lay.n_seg * seg_len - seq), (0, 0)))
+    sums = padded.reshape(batch, lay.n_seg, seg_len, dim).sum(axis=2)
+    return jnp.exp(sums[:, :, None, :] * ap[None, None])
+
+
+def _gpu_entry_states(padded, lay: _GpuLayout):
+    """Each segment's true entry state [B, G, S, D] (zeros when G == 1)."""
+    xp, ap, bp, cp, deltap, dp = padded
+    seg_shape = (xp.shape[0], lay.n_seg) + ap.shape
+    if lay.n_seg == 1:
+        return jnp.zeros(seg_shape, jnp.float32)
+    ends = _gpu_call(
+        _gpu_fwd_kernel,
+        lay,
+        jax.ShapeDtypeStruct(seg_shape, jnp.float32),
+        xp,
+        ap,
+        bp,
+        cp,
+        deltap,
+        dp,
+        jnp.zeros((1,), jnp.float32),
+        mode="summary",
+    )
+    decay = _segment_decay(ap, deltap, lay)
+
+    def step(h, inp):
+        dec, end = inp
+        return dec * h + end, h
+
+    _, entries = lax.scan(
+        step,
+        jnp.zeros((xp.shape[0],) + ap.shape, jnp.float32),
+        (jnp.swapaxes(decay, 0, 1), jnp.swapaxes(ends, 0, 1)),
+    )
+    return jnp.swapaxes(entries, 0, 1)
+
+
+def _gpu_scan_forward(x, a, b, c, delta, d, *, config=None):
+    cfg = _gpu_scan_config("fwd", a.shape[0], config)
+    _, seq, dim = x.shape
+    padded = _gpu_scan_pad(
+        x, a, b, c, delta, d, chunk=cfg["chunk"], dim_block=cfg["dim_block"]
+    )
+    lay = _gpu_layout(padded[0], cfg)
+    h_init = _gpu_entry_states(padded, lay)
+    y = _gpu_call(
+        _gpu_fwd_kernel,
+        lay,
+        jax.ShapeDtypeStruct(padded[0].shape, jnp.float32),
+        *padded,
+        h_init,
+        mode="y",
+    )
+    return y[:, :seq, :dim].astype(x.dtype)
+
+
+def _gpu_scan_backward(dy, x, a, b, c, delta, d, *, config=None):
+    cfg = _gpu_scan_config("bwd", a.shape[0], config)
+    batch, seq, dim = x.shape
+    state = a.shape[0]
+    padded = _gpu_scan_pad(
+        x, a, b, c, delta, d, chunk=cfg["chunk"], dim_block=cfg["dim_block"]
+    )
+    xp, ap, bp, cp, deltap, dp = padded
+    lay = _gpu_layout(xp, cfg)
+    f32 = jnp.float32
+    seg_shape = (batch, lay.n_seg) + ap.shape
+    h_init = _gpu_entry_states(padded, lay)
+    hs = _gpu_call(
+        _gpu_fwd_kernel,
+        lay,
+        jax.ShapeDtypeStruct((batch, lay.n_chunks) + ap.shape, f32),
+        *padded,
+        h_init,
+        mode="states",
+    )
+    dyp = jnp.pad(
+        dy.astype(f32), ((0, 0), (0, xp.shape[1] - seq), (0, xp.shape[2] - dim))
+    )
+    bwd_args = (dyp, xp, ap, bp, cp, deltap, dp, hs)
+    if lay.n_seg == 1:
+        g_init = jnp.zeros(seg_shape, f32)
+    else:
+        # Outgoing cotangent of each segment from a zero carry-in, combined
+        # in reverse: q_{k-1} = out_k + decay_k * q_k, q_{G-1} = 0.
+        outs = _gpu_call(
+            _gpu_bwd_kernel,
+            lay,
+            jax.ShapeDtypeStruct(seg_shape, f32),
+            *bwd_args,
+            jnp.zeros((1,), f32),
+            summary=True,
+        )
+        decay = _segment_decay(ap, deltap, lay)
+
+        def step(q, inp):
+            dec, out = inp
+            return out + dec * q, q
+
+        _, g_init = lax.scan(
+            step,
+            jnp.zeros((batch,) + ap.shape, f32),
+            (jnp.swapaxes(decay, 0, 1), jnp.swapaxes(outs, 0, 1)),
+            reverse=True,
+        )
+        g_init = jnp.swapaxes(g_init, 0, 1)
+    dx, ddelta, db, dc, da = _gpu_call(
+        _gpu_bwd_kernel,
+        lay,
+        (
+            jax.ShapeDtypeStruct(xp.shape, f32),
+            jax.ShapeDtypeStruct(xp.shape, f32),
+            jax.ShapeDtypeStruct((lay.n_dim,) + bp.shape, f32),
+            jax.ShapeDtypeStruct((lay.n_dim,) + bp.shape, f32),
+            jax.ShapeDtypeStruct(seg_shape, f32),
+        ),
+        *bwd_args,
+        g_init,
+        summary=False,
+    )
+    dd = jnp.sum(dy.astype(f32) * x.astype(f32), axis=(0, 1))[None]
+    return (
+        dx[:, :seq, :dim].astype(x.dtype),
+        jnp.sum(da, axis=(0, 1))[:state, :dim].astype(a.dtype),
+        jnp.swapaxes(jnp.sum(db, axis=0), 1, 2)[:, :seq, :state].astype(b.dtype),
+        jnp.swapaxes(jnp.sum(dc, axis=0), 1, 2)[:, :seq, :state].astype(c.dtype),
+        ddelta[:, :seq, :dim].astype(delta.dtype),
+        dd.astype(d.dtype),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Mamba scan primitives
 # ---------------------------------------------------------------------------
 # Only the batch dimension is shardable; seq/dim/state/one stay replicated.
@@ -873,10 +1296,14 @@ _MAMBA_BWD_SPEC = derive_bwd_spec(
 
 
 def _mamba_fwd_impl(x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
+    if jax.default_backend() == "gpu":
+        return _gpu_scan_forward(x, a, b, c, delta, d)
     return _loop_forward_pallas(x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
 
 
 def _mamba_bwd_impl(dy, x, a, b, c, delta, d, *, seq_tile_size, dim_tile_size):
+    if jax.default_backend() == "gpu":
+        return _gpu_scan_backward(dy, x, a, b, c, delta, d)
     return _loop_backward_pallas(dy, x, a, b, c, delta, d, seq_tile_size, dim_tile_size)
 
 
@@ -1033,12 +1460,16 @@ def compute_mamba_scan(
     Returns:
         A [batch_size, seqlen, inner_dim] jax.Array representing the Mamba scan's output.
 
-    Note:
-        CPU and multi-tile GPU calls use a pure-JAX associative scan,
-        differentiated through by autodiff. GPU programs cannot safely share
-        the TPU kernel's carry across sequence or dimension tiles. Single-tile
-        GPU calls retain the fused kernel. These paths agree up to floating-
-        point reassociation; the GPU fallback's performance is unbenchmarked.
+    Dispatch:
+        * CPU: chunked pure-XLA selective scan
+          (:func:`~.mamba_chunked.mamba_scan_chunked`) with a memory-bounded
+          custom VJP -- only chunk-entry states are kept for the backward.
+        * GPU (Triton): sequence-loop Pallas kernels (one program per batch
+          element and channel block); the backward recomputes states from
+          chunk-entry states. ``seq_tile_size`` / ``dim_tile_size`` only
+          configure the TPU kernels; GPU tiling is set by
+          ``_GPU_SCAN_CONFIG``.
+        * TPU: the tiled Pallas kernels with a carry across sequence tiles.
     """
     _validate_mamba_runtime_inputs(
         x,
@@ -1052,33 +1483,34 @@ def compute_mamba_scan(
     )
 
     backend = jax.default_backend()
-    pallas_backend = _pallas_backend()
     if backend == "cpu":
-        return _mamba_scan_associative(x, a, b, c, delta, d)
-    # GPU programs are unordered: the TPU kernel's shared carry cannot be
-    # handed from one sequence/dimension tile to another without a barrier.
-    # Keep the fused single-tile path; use a differentiable associative scan
-    # when multiple programs would race on that carry.
-    if backend == "gpu" and (x.shape[1] > seq_tile_size or x.shape[2] > dim_tile_size):
-        return _mamba_scan_associative(x, a, b, c, delta, d)
-    if backend not in ("tpu", "gpu"):
-        raise RuntimeError(
-            f"compute_mamba_scan only supports TPU and GPU backends, got {backend!r}."
+        return mamba_scan_chunked(x, a, b, c, delta, d)
+    if backend == "gpu":
+        pallas_backend = _pallas_backend()
+        if not _gpu_supports_mamba_pallas_for_shape(
+            seq_len=x.shape[1],
+            inner_dim=x.shape[2],
+            state_dim=a.shape[0],
+            seq_tile_size=seq_tile_size,
+            dim_tile_size=dim_tile_size,
+            pallas_backend=pallas_backend,
+        ):
+            raise RuntimeError(
+                "compute_mamba_scan does not support this GPU Pallas configuration. "
+                f"backend={pallas_backend!r}, seq_len={x.shape[1]}, "
+                f"inner_dim={x.shape[2]}, state_dim={a.shape[0]}. "
+                "Reference fallback on GPU is disabled; call "
+                "mamba_scan_chunked for the pure-XLA path."
+            )
+        # The GPU kernels pad internally (L to the chunk, D to the channel
+        # block, S to a power of two) -- no padding copies here.
+        return cast(
+            jax.Array,
+            _mamba_scan_op(x, a, b, c, delta, d, seq_tile_size, dim_tile_size),
         )
-    if backend == "gpu" and not _gpu_supports_mamba_pallas_for_shape(
-        seq_len=x.shape[1],
-        inner_dim=x.shape[2],
-        state_dim=a.shape[0],
-        seq_tile_size=seq_tile_size,
-        dim_tile_size=dim_tile_size,
-        pallas_backend=pallas_backend,
-    ):
+    if backend != "tpu":
         raise RuntimeError(
-            "compute_mamba_scan does not support this GPU Pallas configuration. "
-            f"backend={pallas_backend!r}, seq_len={x.shape[1]}, "
-            f"inner_dim={x.shape[2]}, state_dim={a.shape[0]}, "
-            f"seq_tile_size={seq_tile_size}, dim_tile_size={dim_tile_size}. "
-            "Reference fallback on GPU is disabled."
+            f"compute_mamba_scan only supports CPU, GPU and TPU backends, got {backend!r}."
         )
 
     _, seqlen, inner = x.shape

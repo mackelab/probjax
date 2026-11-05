@@ -126,3 +126,70 @@ def test_hopper_mosaic_path_matches_ragged_dot():
     gb = jax.grad(f(ref), argnums=(0, 1))(x, w)
     for a, b in zip(ga, gb):
         assert _rel(a.astype(jnp.float32), b) < 1e-2
+
+
+@pytest.mark.skipif(
+    not __import__("probjax.nn.pallas_kernels.kernels.grouped_matmul",
+                   fromlist=["is_hopper"]).is_hopper(),
+    reason="Mosaic-GPU ragged dot needs an sm_90 GPU",
+)
+def test_hopper_mosaic_path_pads_unaligned_rows_and_rejects_fp32():
+    """Row counts off the kernels' 8-row tiling (here 42) are padded into the last
+    group; float32 operands raise instead of failing inside wgmma lowering."""
+    from probjax.nn.layers.grouped_matmul import ragged_matmul_hopper
+
+    gs = jnp.array([20, 0, 17, 5], jnp.int32)
+    x = jax.random.normal(jax.random.key(0), (42, 64), jnp.bfloat16)
+    w = jax.random.normal(jax.random.key(1), (4, 64, 96), jnp.bfloat16) / 8
+    f = lambda fn: (lambda x, w: jnp.sum(jnp.sin(fn(x, w).astype(jnp.float32))))
+    ours = lambda x, w: ragged_matmul_hopper(x, w, gs)
+    ref = lambda x, w: jax.lax.ragged_dot(x.astype(jnp.float32), w.astype(jnp.float32), gs)
+    out = jax.jit(ours)(x, w)
+    assert out.shape == (42, 96)
+    assert _rel(out.astype(jnp.float32), ref(x, w)) < 1e-2
+    ga = jax.jit(jax.grad(f(ours), argnums=(0, 1)))(x, w)
+    gb = jax.grad(f(ref), argnums=(0, 1))(x, w)
+    for a, b in zip(ga, gb, strict=True):
+        assert a.shape == b.shape
+        assert _rel(a.astype(jnp.float32), b) < 1e-2
+    with pytest.raises(ValueError, match="float16/bfloat16"):
+        ragged_matmul_hopper(x.astype(jnp.float32), w.astype(jnp.float32), gs)
+
+
+@pytest.mark.parametrize("sizes", [
+    [10, 0, 37, 1, 16],      # empty and single-row groups, unaligned sizes
+    [64, 0, 0, 0, 0],        # everything in one group
+    [0, 3, 0, 0, 90],        # a group spanning several slabs
+])
+@pytest.mark.parametrize("slab_elems", [None, 16 * 8 * 2])  # one slab / 2-block slabs
+def test_grouped_swiglu_row_slabs_match_ragged_dot(sizes, slab_elems, monkeypatch):
+    """The slab loop (gathering each slab's rows, accumulating dW over slabs)
+    computes what one pass over the whole padded layout does."""
+    import probjax.nn.layers.grouped_matmul as gm
+
+    monkeypatch.setattr(gm, "SLAB_ELEMS", slab_elems)
+    gs = jnp.asarray(sizes, jnp.int32)
+    m, d, h = int(gs.sum()), 16, 8
+    ks = jax.random.split(jax.random.key(m), 4)
+    x = jax.random.normal(ks[0], (m, d))
+    wg = jax.random.normal(ks[1], (5, d, h)) / 4
+    wu = jax.random.normal(ks[2], (5, d, h)) / 4
+    wd = jax.random.normal(ks[3], (5, h, d)) / 3
+    if slab_elems is not None:
+        assert gm._slabs(gm.make_group_layout(gs, m, 16).n_padded, 16, h)[0] > 1
+
+    def ours(x, a, b, c):
+        return gm.grouped_swiglu(x, a, b, c, gs, 16, None)
+
+    def ref(x, a, b, c):
+        return _ref(gs, jax.nn.silu(_ref(gs, x, a)) * _ref(gs, x, b), c)
+
+    def loss(f):
+        return lambda *a: jnp.sum(jnp.sin(f(*a)))
+
+    args = (x, wg, wu, wd)
+    assert _rel(jax.jit(ours)(*args), ref(*args)) < TOL
+    g_ours = jax.jit(jax.grad(loss(ours), argnums=range(4)))(*args)
+    g_ref = jax.grad(loss(ref), argnums=range(4))(*args)
+    for a, b in zip(g_ours, g_ref, strict=True):
+        assert _rel(a, b) < TOL

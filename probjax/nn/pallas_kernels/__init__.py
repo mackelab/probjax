@@ -39,6 +39,7 @@ from .kernels.flash_attention3 import (
     attention_with_pipeline_emitter,
     mha_flash,
 )
+from .kernels.kernel_lse import kernel_logsumexp, kernel_logsumexp_dense
 from .kernels.kernel_mv import (
     kde_density,
     kernel_mv,
@@ -56,6 +57,12 @@ from .kernels.linear_attention import (
     right_shift_and_zero_pad,
 )
 from .kernels.mamba import compute_mamba_scan
+from .kernels.delta_rule import (
+    gated_delta_rule,
+    gated_delta_rule_chunked,
+    gated_delta_rule_pallas,
+    gated_delta_rule_recurrent,
+)
 from .kernels.ssd import (
     ssd,
     ssd_linear_scan,
@@ -102,7 +109,13 @@ __all__ = [
     "attention",
     "attention_with_pipeline_emitter",
     "compute_mamba_scan",
+    "gated_delta_rule",
+    "gated_delta_rule_chunked",
+    "gated_delta_rule_pallas",
+    "gated_delta_rule_recurrent",
     "kde_density",
+    "kernel_logsumexp",
+    "kernel_logsumexp_dense",
     "kernel_mv",
     "kernel_mv_naive",
     "mha",

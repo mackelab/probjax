@@ -143,6 +143,215 @@ def _linear_attention_scan_core(
     return jnp.moveaxis(output, 0, 2), final_state
 
 
+def _chunked_batched(q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims):
+    """GPU form: 6-D einsums (cuBLAS batches them well)."""
+    (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
+    ) = dims
+    f32 = jnp.float32
+    qc = q_features.reshape(batch, num_kv_heads, groups, num_chunks, chunk, feature_dim)
+    kc = k_features.reshape(batch, num_kv_heads, num_chunks, chunk, feature_dim)
+    vc = v.reshape(batch, num_kv_heads, num_chunks, chunk, value_dim)
+    state0 = h0.astype(jnp.float32).reshape(
+        batch, num_kv_heads, groups, feature_dim, value_dim
+    )
+
+    chunk_kv = einsum("bjncf,bjncd->bjnfd", kc, vc)
+    total = jnp.sum(chunk_kv, axis=2)
+    # Exclusive prefix sum: state entering chunk n (excluding h0).
+    prefix = jnp.cumsum(chunk_kv, axis=2) - chunk_kv
+
+    q32 = qc.astype(f32)
+    inter = einsum("bjgncf,bjgfd->bjgncd", q32, state0) + einsum(
+        "bjgncf,bjnfd->bjgncd", q32, prefix
+    )
+    scores = einsum("bjgncf,bjnsf->bjgncs", qc, kc)
+    causal = jnp.tril(jnp.ones((chunk, chunk), dtype=bool))
+    scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
+    intra = einsum("bjgncs,bjnsd->bjgncd", scores, vc)
+    output = (inter + intra).astype(dtype)
+    output = output.reshape(batch, num_heads, padded, value_dim)[:, :, :seq_len]
+    final_state = state0 + total[:, :, None]
+    return output, final_state
+
+
+def _chunked_rank3(q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims):
+    """CPU form: rank-3 batched matmuls only."""
+    (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
+    ) = dims
+    f32 = jnp.float32
+    # All matmuls are rank-3 with one leading batch axis: XLA:CPU runs 6-D
+    # einsums with interior batch axes 1.2-2x slower (forward). Rows of one chunk from
+    # all G query heads that share a kv head are stacked ([G * c, F]).
+    rows = groups * chunk
+    flat = batch * num_kv_heads * num_chunks
+    qn = q_features.reshape(batch, num_kv_heads, groups, num_chunks, chunk, feature_dim)
+    if groups > 1:
+        qn = jnp.swapaxes(qn, 2, 3)
+    qn = qn.reshape(flat, rows, feature_dim)
+    kn = k_features.reshape(flat, chunk, feature_dim)
+    vn = v.reshape(flat, chunk, value_dim)
+    state0 = h0.astype(jnp.float32).reshape(batch * num_heads, feature_dim, value_dim)
+
+    chunk_kv = einsum("xcf,xcd->xfd", kn, vn).reshape(
+        batch * num_kv_heads, num_chunks, feature_dim, value_dim
+    )
+    total = jnp.sum(chunk_kv, axis=1)
+    # Exclusive prefix sum: state entering chunk n (excluding h0).
+    prefix = (jnp.cumsum(chunk_kv, axis=1) - chunk_kv).reshape(
+        flat, feature_dim, value_dim
+    )
+
+    scores = einsum("xrf,xsf->xrs", qn, kn)
+    causal = jnp.tile(jnp.tril(jnp.ones((chunk, chunk), dtype=bool)), (groups, 1))
+    scores = jnp.where(causal, scores, 0.0).astype(compute_dtype)
+    local = einsum("xrs,xsd->xrd", scores, vn) + einsum(
+        "xrf,xfd->xrd", qn.astype(f32), prefix
+    )
+    local = local.reshape(batch, num_kv_heads, num_chunks, groups, chunk, value_dim)
+    if groups > 1:
+        local = jnp.swapaxes(local, 2, 3)
+    local = local.reshape(batch * num_heads, padded, value_dim)
+    # Initial-state term per query head: one [L, F] @ [F, D] matmul.
+    q_heads = q_features.reshape(batch * num_heads, padded, feature_dim)
+    output = local + einsum("xlf,xfd->xld", q_heads.astype(f32), state0)
+    output = output.astype(dtype).reshape(batch, num_heads, padded, value_dim)
+    output = output[:, :, :seq_len]
+    final_state = state0.reshape(
+        batch, num_kv_heads, groups, feature_dim, value_dim
+    ) + total.reshape(batch, num_kv_heads, 1, feature_dim, value_dim)
+    return output, final_state
+
+
+def _use_rank3_form() -> bool:
+    return jax.default_backend() == "cpu"
+
+
+def _linear_attention_chunked_core(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    h0: jax.Array,
+    feature_map: FeatureMap,
+    chunk_size: int,
+) -> tuple[jax.Array, jax.Array]:
+    """Chunk-parallel form of :func:`_linear_attention_scan_core`.
+
+    Splits the sequence into chunks of ``chunk_size`` tokens. Within a chunk the
+    causal contribution is a masked ``[c, c]`` matmul; across chunks only the
+    ``[F, D]`` chunk sums ``K_n^T V_n`` are prefix-summed. This never builds the
+    per-token state history that the step scan (and its VJP) stores, so reverse
+    mode keeps ``O(L / c * F * D + L * c)`` residuals instead of ``O(L * F * D)``.
+    Grouped-query heads are handled by reshaping queries to
+    ``[B, H_kv, G, ...]`` instead of repeating keys/values.
+    """
+    batch, num_heads, seq_len, _ = q.shape
+    num_kv_heads = k.shape[1]
+    if num_heads % num_kv_heads:
+        raise ValueError("num_heads must be divisible by num_kv_heads")
+    groups = num_heads // num_kv_heads
+    value_dim = v.shape[-1]
+    dtype = v.dtype
+    feature_fn = get_feature_map(feature_map).fwd
+    # Same feature dtype as the scan reference (computed in float32 inside).
+    q_features = feature_fn(q)
+    k_features = feature_fn(k)
+    feature_dim = q_features.shape[-1]
+
+    chunk = max(1, min(chunk_size, seq_len))
+    num_chunks = -(-seq_len // chunk)
+    padded = num_chunks * chunk
+    if padded != seq_len:
+        # Zero-padded keys/values add nothing to the state; padded query rows
+        # are dropped. Pad after the feature map so padded keys are exactly 0.
+        pad = [(0, 0), (0, 0), (0, padded - seq_len), (0, 0)]
+        q_features = jnp.pad(q_features, pad)
+        k_features = jnp.pad(k_features, pad)
+        v = jnp.pad(v, pad)
+
+    if jax.default_backend() == "cpu" and dtype != jnp.float32:
+        # XLA:CPU has no bf16 x bf16 -> f32 dot; low precision buys nothing there.
+        q_features, k_features, v = (
+            x.astype(jnp.float32) for x in (q_features, k_features, v)
+        )
+    compute_dtype = v.dtype
+
+    f32 = jnp.float32
+    # float32 inputs use full-precision dots: on GPU the default (TF32) costs
+    # ~3 mantissa digits, and the feature-map backward (softmax/relu of +/-
+    # halves) cancels strongly in dk -- with TF32 its relative error grows to
+    # ~8e-2 at L=8192 vs ~5e-4 here. On an RTX 3090 this costs <= ~10% time.
+    precision = jax.lax.Precision.HIGHEST if compute_dtype == f32 else None
+    einsum = functools.partial(
+        jnp.einsum, preferred_element_type=f32, precision=precision
+    )
+    dims = (
+        batch,
+        num_heads,
+        num_kv_heads,
+        groups,
+        num_chunks,
+        chunk,
+        padded,
+        seq_len,
+        feature_dim,
+        value_dim,
+    )
+    # XLA:CPU runs 6-D einsums with interior batch axes 1.2-2x slower than
+    # rank-3 batched matmuls; on GPU the 6-D form is 3-13% faster (no
+    # head/chunk transposes) except for GQA.
+    form = _chunked_rank3 if _use_rank3_form() else _chunked_batched
+    output, final_state = form(
+        q_features, k_features, v, h0, einsum, compute_dtype, dtype, dims
+    )
+    return output, final_state.reshape(h0.shape)
+
+
+@functools.partial(
+    jax.jit, static_argnames=("window_size", "feature_map", "chunk_size")
+)
+def residual_linear_attention_chunked(
+    q: jax.Array,
+    k: jax.Array,
+    v: jax.Array,
+    h0: jax.Array,
+    *,
+    window_size: int,
+    feature_map: FeatureMap | str = FeatureMap.SOFTMAX,
+    chunk_size: int = 64,
+) -> tuple[jax.Array, jax.Array]:
+    """Chunked pure-JAX residual linear attention (any backend, any length).
+
+    Same math as the Pallas kernel, expressed as batched XLA matmuls plus a
+    prefix sum over chunk states. Default on CPU and the GPU fallback when no
+    Pallas chunk fits in shared memory; also used as the Pallas backward.
+    """
+    feature_map = FeatureMap(feature_map)
+    shift = window_size + 1
+    k = right_shift_and_zero_pad(k, shift)
+    v = right_shift_and_zero_pad(v, shift)
+    return _linear_attention_chunked_core(q, k, v, h0, feature_map, chunk_size)
+
+
 @functools.partial(jax.jit, static_argnames=("window_size", "feature_map"))
 def residual_linear_attention_scan(
     q: jax.Array,
@@ -174,28 +383,29 @@ def _linear_attention_kernel(
     output_ref,
     final_state_ref,
     *,
-    feature_map: FeatureMap,
     chunk_size: int,
 ):
-    """One-program-per-head chunked kernel, safe for unordered GPU grids."""
-    seq_len, head_dim = q_ref.shape
-    feature_fn = get_feature_map(feature_map).fwd
+    """One-program-per-head chunked kernel, safe for unordered GPU grids.
+
+    ``q_ref``/``k_ref`` hold feature-mapped queries/keys (float32). The feature
+    maps concatenate positive and negative halves, which Triton cannot lower,
+    so they are applied outside the kernel.
+    """
+    seq_len = q_ref.shape[0]
     state = h0_ref[:, :].astype(jnp.float32)
     causal = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.float32))
 
     def chunk_step(chunk_index, current_state):
         start = chunk_index * chunk_size
-        q = pallas_primitives.load(
+        q_features = pallas_primitives.load(
             q_ref, (pl.dslice(start, chunk_size), slice(None))
         ).astype(jnp.float32)
-        k = pallas_primitives.load(
+        k_features = pallas_primitives.load(
             k_ref, (pl.dslice(start, chunk_size), slice(None))
         ).astype(jnp.float32)
         v = pallas_primitives.load(
             v_ref, (pl.dslice(start, chunk_size), slice(None))
         ).astype(jnp.float32)
-        q_features = feature_fn(q).astype(jnp.float32)
-        k_features = feature_fn(k).astype(jnp.float32)
         inter = jnp.dot(q_features, current_state)
         intra = jnp.dot(q_features, k_features.T) * causal
         output = inter + jnp.dot(intra, v)
@@ -208,6 +418,75 @@ def _linear_attention_kernel(
 
     state = jax.lax.fori_loop(0, seq_len // chunk_size, chunk_step, state)
     final_state_ref[:, :] = state
+
+
+# Fallback when the device cannot be queried: the smallest opt-in shared memory
+# per block among current NVIDIA GPUs (consumer Ampere/Ada, 99 KB).
+_DEFAULT_SMEM_BYTES = 101376
+
+
+def _kernel_smem_bytes(
+    chunk_size: int, feature_dim: int, head_dim: int, value_dtype
+) -> int:
+    """Shared memory Triton requests for one program.
+
+    Fitted to measured requests on an RTX 3090 and checked against every
+    failing (power-of-two) case for head_dim 16..128, chunk 16..128, float32
+    and bfloat16: the model reproduces Triton's request byte-for-byte (e.g.
+    float32 head_dim 64: 160 KiB at chunk 64; bfloat16 head_dim 64 (features
+    stored in bfloat16): 144 KiB at chunk 64). At chunk 256 Triton drops
+    pipelining and requests less, so the model is conservative there. The
+    [feature_dim, head_dim] float32 state is resident for the whole program.
+    """
+    if _full_fp32_matmul_precision():
+        # Full-fp32 dots (no TF32) need larger, non-linearly growing buffers.
+        # Conservative bound over measured requests (e.g. head_dim 64: 112 KiB
+        # at chunk 32, 384 KiB at chunk 128; head_dim 16: 144 KiB at chunk 128).
+        return (
+            4 * chunk_size * chunk_size
+            + 40 * chunk_size * head_dim
+            + (4 * feature_dim * head_dim)
+        )
+    per_row = (
+        2 * feature_dim + (4 if jnp.dtype(value_dtype) == jnp.float32 else 3) * head_dim
+    )
+    return 4 * chunk_size * per_row + 4 * feature_dim * head_dim
+
+
+def _full_fp32_matmul_precision() -> bool:
+    """Whether ``jax_default_matmul_precision`` (incl. context) disables TF32."""
+    precision = jax.config.jax_default_matmul_precision
+    return str(precision).lower() in ("highest", "float32", "precision.highest")
+
+
+def _fit_chunk_size(
+    chunk_size: int, feature_dim: int, head_dim: int, value_dtype
+) -> int | None:
+    """Largest chunk <= ``chunk_size`` (halving, >= 16) whose tiles fit in
+    shared memory, or ``None`` if none does on this device."""
+    from .attention import _query_triton_smem_limit
+
+    try:
+        limit = _query_triton_smem_limit() or _DEFAULT_SMEM_BYTES
+    except Exception:
+        limit = _DEFAULT_SMEM_BYTES
+    while _kernel_smem_bytes(chunk_size, feature_dim, head_dim, value_dtype) > limit:
+        if chunk_size <= 16:
+            return None
+        chunk_size //= 2
+    return chunk_size
+
+
+def _is_pow2(n: int) -> bool:
+    return n > 0 and n & (n - 1) == 0
+
+
+def _gpu_chunk_size(q: jax.Array, v: jax.Array, chunk_size: int) -> int | None:
+    # Pallas-Triton only lowers power-of-two tiles (head_dim 48/80/96 fail).
+    if not (_is_pow2(q.shape[-1]) and _is_pow2(v.shape[-1]) and _is_pow2(chunk_size)):
+        return None
+    feature_dim = 2 * q.shape[-1]  # both feature maps concatenate +/- halves
+    return _fit_chunk_size(chunk_size, feature_dim, v.shape[-1], v.dtype)
 
 
 def _linear_attention_pallas_impl(
@@ -230,13 +509,40 @@ def _linear_attention_pallas_impl(
         raise ValueError("h0 must have shape [batch, heads, 2 * head_dim, head_dim]")
 
     repeats = num_heads // num_kv_heads
+    # Feature maps are per-token, so apply them once outside the kernel. They
+    # are computed in float32 and stored in the input dtype (as in the scan
+    # reference), so bf16 inputs do not materialize float32 [L, 2D] features.
+    feature_fn = get_feature_map(feature_map).fwd
+    q_features = feature_fn(q)
+    k_features = feature_fn(k)
+    feature_dim = q_features.shape[-1]
+    if jax.default_backend() == "gpu" and not use_interpret_mode():
+        # The chunk only tiles the recurrence; any divisor gives the same result.
+        fitted = _gpu_chunk_size(q, v, chunk_size)
+        if fitted is None:
+            raise ValueError(
+                "residual_linear_attention_pallas: no power-of-two chunk fits "
+                "this GPU's shared memory (or head_dim/chunk_size is not a power "
+                f"of two) for head_dim={head_dim}, chunk_size={chunk_size}, "
+                f"dtype={v.dtype}; use implementation='chunked' (or 'auto', which "
+                "falls back to it)."
+            )
+        chunk_size = fitted
     q_spec = pl.BlockSpec(
-        block_shape=(None, None, seq_len, head_dim),
+        block_shape=(None, None, seq_len, feature_dim),
         index_map=lambda b, h: (b, h, 0, 0),
+    )
+    k_spec = pl.BlockSpec(
+        block_shape=(None, None, seq_len, feature_dim),
+        index_map=lambda b, h: (b, h // repeats, 0, 0),
     )
     kv_spec = pl.BlockSpec(
         block_shape=(None, None, seq_len, head_dim),
         index_map=lambda b, h: (b, h // repeats, 0, 0),
+    )
+    out_spec = pl.BlockSpec(
+        block_shape=(None, None, seq_len, head_dim),
+        index_map=lambda b, h: (b, h, 0, 0),
     )
     state_spec = pl.BlockSpec(
         block_shape=(None, None, 2 * head_dim, head_dim),
@@ -245,20 +551,16 @@ def _linear_attention_pallas_impl(
     output_shape = jax.ShapeDtypeStruct(q.shape, v.dtype)
     state_shape = jax.ShapeDtypeStruct(h0.shape, jnp.float32)
     backend = "triton" if jax.default_backend() == "gpu" else None
-    kernel = functools.partial(
-        _linear_attention_kernel,
-        feature_map=feature_map,
-        chunk_size=chunk_size,
-    )
+    kernel = functools.partial(_linear_attention_kernel, chunk_size=chunk_size)
     return pallas_call_compat(
         kernel,
-        in_specs=(q_spec, kv_spec, kv_spec, state_spec),
-        out_specs=(q_spec, state_spec),
+        in_specs=(q_spec, k_spec, kv_spec, state_spec),
+        out_specs=(out_spec, state_spec),
         out_shape=(output_shape, state_shape),
         grid=(batch_size, num_heads),
         interpret=use_interpret_mode(),
         backend=backend,
-    )(q, k, v, h0.astype(jnp.float32))
+    )(q_features, k_features, v, h0.astype(jnp.float32))
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5))
@@ -280,13 +582,13 @@ def _linear_attention_pallas_fwd(q, k, v, h0, feature_map, chunk_size):
 
 def _linear_attention_pallas_bwd(feature_map, chunk_size, residuals, cotangents):
     # AXLearn's backward passes state between ordered TPU grid programs. Triton
-    # grids are unordered, so use the reference VJP until a GPU-specific
-    # one-program-per-head backward kernel is implemented.
-    del chunk_size
+    # grids are unordered, so differentiate the chunked XLA form instead: it
+    # recomputes chunk scores and keeps only chunk-boundary states, rather
+    # than the per-token state history the step-scan VJP stores.
     q, k, v, h0 = residuals
     _, pullback = jax.vjp(
-        lambda q_, k_, v_, h0_: _linear_attention_scan_core(
-            q_, k_, v_, h0_, feature_map
+        lambda q_, k_, v_, h0_: _linear_attention_chunked_core(
+            q_, k_, v_, h0_, feature_map, chunk_size
         ),
         q,
         k,
@@ -334,31 +636,32 @@ def residual_linear_attention(
     chunk_size: int = 128,
     implementation: str = "auto",
 ) -> tuple[jax.Array, jax.Array]:
-    """Dispatch residual linear attention to the selected implementation."""
-    if implementation not in ("auto", "pallas", "scan"):
-        raise ValueError("implementation must be 'auto', 'pallas', or 'scan'")
-    use_pallas = implementation == "pallas" or (
-        implementation == "auto"
-        and jax.default_backend() == "gpu"
-        and q.shape[2] % chunk_size == 0
-    )
-    if use_pallas:
-        return residual_linear_attention_pallas(
-            q,
-            k,
-            v,
-            h0,
-            window_size=window_size,
-            feature_map=feature_map,
-            chunk_size=chunk_size,
+    """Dispatch residual linear attention to the selected implementation.
+
+    ``implementation``:
+
+    * ``"auto"`` / ``"chunked"`` -- chunk-parallel pure JAX/XLA (any backend,
+      length and head dim). On an RTX 3090 it beats the Pallas forward by
+      1.4-2.5x for L >= 2048 (cuBLAS batched matmuls vs one Triton program
+      per head), so it is the default on GPU as well as CPU.
+    * ``"pallas"`` -- the Pallas kernel (interpret mode on CPU); its backward
+      is the VJP of the chunked form.
+    * ``"scan"`` -- the per-token ``lax.scan`` reference (slow; its VJP stores
+      every ``[2D, D]`` state).
+    """
+    if implementation not in ("auto", "pallas", "chunked", "scan"):
+        raise ValueError(
+            "implementation must be 'auto', 'pallas', 'chunked', or 'scan'"
         )
-    return residual_linear_attention_scan(
-        q,
-        k,
-        v,
-        h0,
-        window_size=window_size,
-        feature_map=feature_map,
+    kwargs = dict(window_size=window_size, feature_map=feature_map)
+    if implementation == "scan":
+        return residual_linear_attention_scan(q, k, v, h0, **kwargs)
+    if implementation == "pallas":
+        return residual_linear_attention_pallas(
+            q, k, v, h0, chunk_size=chunk_size, **kwargs
+        )
+    return residual_linear_attention_chunked(
+        q, k, v, h0, chunk_size=chunk_size, **kwargs
     )
 
 
@@ -366,6 +669,7 @@ __all__ = [
     "FeatureMap",
     "get_feature_map",
     "residual_linear_attention",
+    "residual_linear_attention_chunked",
     "residual_linear_attention_pallas",
     "residual_linear_attention_scan",
     "right_shift_and_zero_pad",
