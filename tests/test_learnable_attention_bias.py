@@ -11,6 +11,7 @@ from probjax.nn.pallas_kernels import (
     LowRankBias,
     T5RelativePositionBias,
 )
+from tests._tolerance import fp32_tol
 
 
 def _attention_inputs():
@@ -66,7 +67,7 @@ def test_flex_low_rank_bias_matches_dense_output_and_gradients():
     flex_output = flex_attention(
         q, k, v, bias=LowRankBias(query_factors, key_factors, scale=0.5)
     )
-    np.testing.assert_allclose(flex_output, dense_output, atol=2e-5, rtol=2e-5)
+    np.testing.assert_allclose(flex_output, dense_output, **fp32_tol(atol=2e-5, rtol=2e-5))
 
     dense_grads = jax.grad(loss, argnums=(1, 2))(
         dot_product_attention, query_factors, key_factors
@@ -75,7 +76,7 @@ def test_flex_low_rank_bias_matches_dense_output_and_gradients():
         flex_attention, query_factors, key_factors
     )
     for flex_grad, dense_grad in zip(flex_grads, dense_grads, strict=True):
-        np.testing.assert_allclose(flex_grad, dense_grad, atol=3e-5, rtol=3e-5)
+        np.testing.assert_allclose(flex_grad, dense_grad, **fp32_tol(atol=3e-5, rtol=3e-5))
 
 
 def test_flex_extracts_low_rank_terms_from_sum_bias():
@@ -83,7 +84,7 @@ def test_flex_extracts_low_rank_terms_from_sum_bias():
     bias = LowRankBias(query_factors, key_factors, scale=0.25) + CausalAlibiBias()
     expected = dot_product_attention(q, k, v, bias=bias)
     actual = flex_attention(q, k, v, bias=bias)
-    np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+    np.testing.assert_allclose(actual, expected, **fp32_tol(atol=2e-5, rtol=2e-5))
 
 
 def test_low_rank_factors_can_be_generated_by_an_nnx_mlp():

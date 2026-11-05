@@ -22,6 +22,9 @@ from probjax.nn.generative.nflows.autoregressive import AutoregressiveTransforme
 from probjax.nn.generative.nflows.coupling import CouplingTransformer
 from probjax.nn.layers.attention import dot_product_attention
 
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
+
 
 def assert_standard_profile(model):
     assert (model.model_dim, model.num_heads, model.attn_size, model.num_layers) == (

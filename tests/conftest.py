@@ -237,6 +237,11 @@ def pytest_configure(config):
         "markers", "slow: long-running tests (training loops, full grids)"
     )
     config.addinivalue_line("markers", "docs: documentation tests")
+    config.addinivalue_line(
+        "markers",
+        "float32_matmul: on GPU, run XLA float32 matmuls in true float32 instead of "
+        "TF32 (tests comparing XLA math against scipy/numpy or equivalent formulations)",
+    )
     # Set JAX platform based on device option
     device = config.getoption("--device")
     if config.getoption("--gpu"):
@@ -246,6 +251,25 @@ def pytest_configure(config):
     device = device or "cpu"
     config.option.device = device
     jax.config.update("jax_platform_name", device)
+
+
+@pytest.fixture(autouse=True)
+def _float32_matmuls_on_gpu(request):
+    """True float32 XLA matmuls on GPU for tests marked ``float32_matmul``.
+
+    XLA's default float32 matmul precision on GPU is TF32 (10-bit mantissa), so a
+    comparison of XLA float32 math against scipy/numpy or an equivalent
+    formulation would test TF32 rounding (~1e-3).  Kernel-vs-reference tests stay
+    on the default: Pallas kernels pin their own (TF32) dot precision, and an
+    exact reference would only widen the gap (tests/_tolerance.py covers them).
+    """
+    if request.config.getoption("--device") != "gpu" or not request.node.get_closest_marker(
+        "float32_matmul"
+    ):
+        yield
+        return
+    with jax.default_matmul_precision("highest"):
+        yield
 
 
 def pytest_collection_modifyitems(config, items):

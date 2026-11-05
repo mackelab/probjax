@@ -26,6 +26,9 @@ from probjax.utils.linalg import (
 )
 from probjax.utils.stats import differential_entropy
 
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
+
 
 @pytest.mark.parametrize('method', ['vasicek', 'van es', 'ebrahimi', 'correa', 'auto'])
 def test_sample_entropy_reference_and_jit(method):
@@ -231,7 +234,8 @@ def test_monotone_transformed_distribution(sign):
         dist.cdf(1.0), sp.norm.cdf(1.0, loc=sign * 2.0, scale=3.0), atol=1e-6
     )
     np.testing.assert_allclose(
-        dist.ppf(0.9), sp.norm.ppf(0.9, loc=sign * 2.0, scale=3.0), atol=1e-6
+        # float32 ndtri: a few ulp apart across backends (GPU: 1.3e-6 at 1.84).
+        dist.ppf(0.9), sp.norm.ppf(0.9, loc=sign * 2.0, scale=3.0), atol=1e-6, rtol=1e-6
     )
 
 
@@ -346,7 +350,9 @@ def test_lanczos_stochastic_probes():
     estimate = jax.jit(
         lambda a: lanczos_logdet(a, num_steps=20, num_probes=2, rng=jax.random.key(42))
     )(a)
-    np.testing.assert_allclose(estimate, jnp.linalg.slogdet(a)[1], rtol=2e-6)
+    # rtol: float32 tridiagonal eigensolvers differ by a few ulp across backends
+    # (GPU 5e-6); probe variance would show up at the 1e-1 level.
+    np.testing.assert_allclose(estimate, jnp.linalg.slogdet(a)[1], rtol=1e-5)
 
 
 @pytest.mark.parametrize('a,b', [(1.0, 1.001), (8.0, 10.0), (20.0, 21.0)])

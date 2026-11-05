@@ -261,7 +261,9 @@ LOGDET_EXPLICIT_CASES: list[AtomicCase] = [
     AtomicCase("neg", jax.lax.neg_p, jnp.negative, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("copy", jax.lax.copy_p, jnp.copy, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase("sqrt", jax.lax.sqrt_p, jnp.sqrt, lambda: jnp.linspace(0.25, 2.0, 7)),
-    AtomicCase("cbrt", jax.lax.cbrt_p, jnp.cbrt, lambda: jnp.linspace(-8.0, 8.0, 7)),
+    # Even count: skips x=0, where the Jacobian is singular (inf) and det() of
+    # it is backend-dependent (LAPACK inf, cuSOLVER nan).
+    AtomicCase("cbrt", jax.lax.cbrt_p, jnp.cbrt, lambda: jnp.linspace(-8.0, 8.0, 6)),
     AtomicCase("tanh", jax.lax.tanh_p, jnp.tanh, lambda: jnp.linspace(-0.5, 0.5, 7)),
     AtomicCase(
         "log1p", jax.lax.log1p_p, jnp.log1p, lambda: jnp.linspace(0.05, 0.95, 7)

@@ -1,10 +1,13 @@
 import jax
 import jax.numpy as jnp
-import pytest
 import numpy as np
+import pytest
 from flax import nnx
 
 from probjax.nn.layers.moe import ExpertSwiGLU, MoELayer, load_balance_loss
+
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
 
 
 def _make_layer(

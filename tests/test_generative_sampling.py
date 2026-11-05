@@ -14,6 +14,9 @@ from probjax.nn.losses.mean_flow import build_mean_flow_matching_loss
 from probjax.stats.continuous import norm
 from probjax.stats.indep import indep
 
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
+
 
 class ShiftTransform:
     def __call__(self, x, context=None, *, rng=None):

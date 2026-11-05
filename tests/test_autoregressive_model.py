@@ -24,6 +24,10 @@ from probjax.nn.generative.autoregressive import (
 )
 from probjax.stats import gennorm, laplace, logistic, norm, t
 
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
+
+
 HEADS = [
     pytest.param(NormalHead(), id="normal"),
     pytest.param(LocScaleHead(laplace), id="laplace"),
