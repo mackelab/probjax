@@ -125,6 +125,49 @@ def test_cudnn_routing(sm90, shape, mask, expect):
         assert (kw["key_value_seq_lengths"] is not None) == (mask == "kvlen")
 
 
+@pytest.fixture
+def mosaic_stub(monkeypatch):
+    from probjax.nn.pallas_kernels.kernels import flash_attention3
+
+    calls = []
+
+    def fake_mha_flash(q, k, v, **kw):
+        calls.append(kw)
+        return SENTINEL
+
+    monkeypatch.setattr(flash_attention3, "mha_flash", fake_mha_flash)
+    return calls
+
+
+def _route_mosaic(q, k, v, mask=None):
+    return ad.mosaic_attention_or_none(
+        q, k, v, mask=mask, bias=None, dropout_rate=0.0, sm_scale=0.1
+    )
+
+
+def test_mosaic_takes_head_dims_cudnn_cannot(sm90, mosaic_stub):
+    q, k, v = _qkv(2, 4096, 4096, 8, 8, 100)  # not a multiple of 8
+    assert _route(q, k, v) is None
+    assert _route_mosaic(q, k, v) is SENTINEL
+    q, k, v = _qkv(2, 4096, 4096, 8, 8, 256)  # beyond the tuned tiles
+    assert _route_mosaic(q, k, v) is None
+
+
+def test_mosaic_when_cudnn_disabled(sm90, mosaic_stub, monkeypatch):
+    monkeypatch.setenv("PROBJAX_ATTENTION_CUDNN", "0")
+    lens = jnp.array([3000, 4096], jnp.int32)
+    q, k, v = _qkv(2, 4096, 4096, 8, 8, 64)
+    assert _route(q, k, v, mask=KVLenMask(lens)) is None
+    assert _route_mosaic(q, k, v, mask=KVLenMask(lens)) is SENTINEL
+    assert isinstance(mosaic_stub[-1]["mask"], KVLenMask)
+    # Same Triton-favoured regions and masks as cuDNN; head_dim 32 stays on Triton.
+    assert _route_mosaic(*_qkv(8, 32768, 256, 8, 8, 32)) is None
+    assert _route_mosaic(*_qkv(56, 256, 32768, 8, 8, 32), mask=KVLenMask(lens[:1].repeat(56))) is None
+    assert _route_mosaic(*_qkv(2, 4096, 4096, 8, 8, 64), mask=SeqLenMask(lens)) is None
+    monkeypatch.setenv("PROBJAX_ATTENTION_MOSAIC", "0")
+    assert _route_mosaic(q, k, v, mask=KVLenMask(lens)) is None
+
+
 def test_cudnn_not_for_fp32_bias_or_dropout(sm90):
     q, k, v = _qkv(4, 4096, 4096, 8, 8, 64, jnp.float32)
     assert _route(q, k, v) is None
@@ -238,10 +281,69 @@ def test_gpu_mha_flash_shapes_match_triton(shape, gqa):
     )
 
 
-def test_mha_flash_rejects_unaligned_kv():
-    _requires_sm90()
-    from probjax.nn.pallas_kernels.kernels.flash_attention3 import mha_flash
+def _rel_close(fn, ref, inputs, tol=0.02):
+    o, g = _out_and_grads(fn, *inputs)
+    ro, rg = _out_and_grads(ref, *inputs)
+    for a, b in zip((o, *g), (ro, *rg), strict=True):
+        scale = float(jnp.max(jnp.abs(b.astype(jnp.float32)))) + 1e-6
+        assert _max_err(a, b) / scale < tol
 
-    q, k, v, _ = _inputs(1, 256, 1000, 2, 2, 64)
-    with pytest.raises(NotImplementedError, match="KV-length mask"):
-        mha_flash(q, k, v)
+
+@pytest.mark.parametrize(
+    "shape, lens",
+    [
+        ((4, 1024, 2048, 8, 8, 64), (2048, 1024, 1000, 77)),  # aligned, unaligned, < one tile
+        ((3, 1000, 1500, 8, 8, 128), (1500, 1499, 2)),  # unaligned sequence lengths
+        ((2, 1024, 2048, 8, 2, 128), (2048, 1500)),  # GQA
+        ((2, 2048, 2048, 8, 8, 100), (2048, 1700)),  # head_dim padded to 128
+        ((2, 1024, 1000, 8, 8, 64), None),  # unaligned keys without a mask
+    ],
+)
+def test_gpu_mosaic_flex_matches_triton(shape, lens):
+    _requires_sm90()
+    from probjax.nn.layers.attention import flex_attention
+
+    m = None if lens is None else KVLenMask(jnp.array(lens, jnp.int32))
+
+    def mosaic(q, k, v):
+        return flex_attention(q, k, v, mask=m, enable_gqa=True, implementation="mosaic")
+
+    def triton(q, k, v):
+        return flex_attention(q, k, v, mask=m, enable_gqa=True, implementation="triton")
+
+    _rel_close(mosaic, triton, _inputs(*shape))
+
+
+def test_gpu_mosaic_zero_length_rows():
+    """Rows without valid keys: zero output and zero gradients, never NaN."""
+    _requires_sm90()
+    from probjax.nn.layers.attention import flex_attention
+
+    q, k, v, g = _inputs(2, 512, 1024, 8, 8, 64)
+    m = KVLenMask(jnp.array([0, 512], jnp.int32))
+    out, grads = _out_and_grads(
+        lambda q, k, v: flex_attention(q, k, v, mask=m, implementation="mosaic"), q, k, v, g
+    )
+    assert bool(jnp.all(out[0] == 0)) and bool(jnp.all(jnp.isfinite(out)))
+    assert all(bool(jnp.all(x[0] == 0)) and bool(jnp.all(jnp.isfinite(x))) for x in grads)
+
+
+def test_gpu_default_routes_d100_to_mosaic():
+    _requires_sm90()
+    from probjax.nn.layers.attention import flex_attention
+
+    q, k, v, _ = _inputs(2, 4096, 4096, 8, 8, 100)
+    hlo = jax.jit(lambda q, k, v: flex_attention(q, k, v)).lower(q, k, v).as_text()
+    assert "mosaic_gpu" in hlo.lower() and "cudnn" not in hlo.lower()
+
+
+def test_explicit_backend_rejects_unsupported():
+    _requires_sm90()
+    from probjax.nn.layers.attention import flex_attention
+
+    q, k, v, _ = _inputs(2, 1024, 1024, 8, 8, 64)
+    with pytest.raises(ValueError, match="cannot compute"):
+        flex_attention(q, k, v, mask=SeqLenMask(jnp.array([1024, 900])), implementation="mosaic")
+    with pytest.raises(ValueError, match="cannot compute"):
+        flex_attention(q.astype(jnp.float32), k.astype(jnp.float32), v.astype(jnp.float32),
+                       implementation="cudnn")

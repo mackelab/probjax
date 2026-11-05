@@ -19,9 +19,10 @@ The same suites as on the [RTX 3090 pages](gpu_overview.md), run on an NVIDIA H1
 | --- | --- |
 | bf16/fp16; no mask, `KVLenMask` or causal with Lq = Lkv; no bias or dropout; head_dim a multiple of 8, ≤ 128; B·H·Lq·Lkv ≥ 2^26 (head_dim ≥ 64) or 2^30 (head_dim 32) | cuDNN (`jax.nn.dot_product_attention(implementation="cudnn")`) |
 | …except Lkv ≤ 256 with Lq ≥ 16·Lkv, and Lq ≤ 64 with Lkv ≥ 16·Lq | Triton (faster there) |
+| cuDNN cannot take the call (head_dim not a multiple of 8, or `PROBJAX_ATTENTION_CUDNN=0`), same masks and thresholds, head_dim 33–128 | Mosaic GPU ([below](#mosaic-gpu)) |
 | Everything else, `backward_pass_impl="auto"` | Triton split backward; single-pass for 16-bit Lq ≤ 256, Lkv ≥ 16·Lq |
 
-`implementation="triton"` (per call), `PROBJAX_ATTENTION_CUDNN=0` or `PROBJAX_ATTENTION_DEVICE_DEFAULTS=0` (generic rules) opt out. The cuDNN path is not bitwise identical to the Triton kernels; outputs and gradients agree to bf16 precision (max |difference| ≤ 0.004 in `tests/test_attention_device_defaults.py`).
+`implementation="triton"` (per call), `"cudnn"` or `"mosaic"` (raise if they cannot compute the call exactly), `PROBJAX_ATTENTION_CUDNN=0`, `PROBJAX_ATTENTION_MOSAIC=0` or `PROBJAX_ATTENTION_DEVICE_DEFAULTS=0` (generic rules) opt out. The cuDNN path is not bitwise identical to the Triton kernels; outputs and gradients agree to bf16 precision (max |difference| ≤ 0.004 in `tests/test_attention_device_defaults.py`).
 
 ### Why
 
@@ -66,7 +67,7 @@ Few queries over long KV, measured with the H100 default:
 
 ## Mosaic GPU
 
-`mha_flash` runs JAX's Hopper FlashAttention-3 kernel (warpgroup MMA, TMA pipelining), vendored as `pallas_kernels/kernels/attention_mgpu.py` because upstream hard-codes float16 shared-memory buffers and rejects every bf16 call. The wrapper takes Lq ≠ Lkv and GQA and pads query length and head_dim exactly; KV lengths that are not a multiple of the KV tile raise (padded keys need an in-kernel length mask). Its default tiles are the best H100 configuration found (64 × 128 forward, backward dK/dV 128 × 64 and dQ 64 × 128, two compute warpgroups); deeper pipelines and 128 × 128 tiles with two warpgroups exceed shared memory at head_dim 128. Unmasked, fwd+bwd ms:
+`mha_flash` runs JAX's Hopper FlashAttention-3 kernel (warpgroup MMA, TMA pipelining), vendored as `pallas_kernels/kernels/attention_mgpu.py` because upstream hard-codes float16 shared-memory buffers and rejects every bf16 call. The wrapper takes Lq ≠ Lkv and GQA and pads query length and head_dim exactly; with per-batch KV lengths it masks and skips padded keys, so any length works. Its default tiles are the best H100 configuration found (64 × 128 forward, backward dK/dV 128 × 64 and dQ 64 × 128, two compute warpgroups); deeper pipelines and 128 × 128 tiles with two warpgroups exceed shared memory at head_dim 128. Unmasked, fwd+bwd ms:
 
 | B × Lq × Lkv, H, d | 128 × 128 tiles (old default) | tuned (default) | cuDNN | Triton split |
 | --- | ---: | ---: | ---: | ---: |
@@ -74,7 +75,24 @@ Few queries over long KV, measured with the H100 default:
 | 4 × 8192 × 8192, 8, 128 | 39.2 | **9.52** | 8.28 | 12.8 |
 | 2 × 131072 × 32768, 1, 128 | 137 | **37.4** | 32.8 | 50.6 |
 
-The forward matches cuDNN; the backward is 8–17% slower, so it is not used by default. For masks and biases cuDNN cannot express, which run on Triton, a masked Mosaic kernel would be about 1.3–1.5× faster than Triton (follow-up).
+`flex_attention(implementation="mosaic")` uses it as a backend with KV lengths: KV tiles past a batch element's length are neither loaded nor computed in the forward, dK/dV programs past it store zeros without running their pipeline, rows without a valid key return zeros. With KV lengths, fwd+bwd ms:
+
+| B × Lq × Lkv, H, d | Mosaic | cuDNN | Triton | torch `flex_attention` |
+| --- | ---: | ---: | ---: | ---: |
+| 2 × 131072 × 32768, 1, 128 (KV lengths) | 30.8 | **26.3** | 89.1 | 33.3 |
+| 1 × 65536 × 131072, 1, 128 (KV lengths) | 31.3 | **25.4** | 72.8 | 32.3 |
+| 4 × 262144 × 1024, 1, 128 (KV lengths) | **10.1** | 11.3 | 11.3 | 11.6 |
+| 4 × 16384 × 16384, 8, 128 (KV lengths) | 34.3 | **28.1** | 55.0 | 36.2 |
+| 4 × 8192 × 8192, 8, 128 | 9.28 | **8.47** | 13.1 | 10.3 |
+| 4 × 8192 × 8192, 8, 64 (KV lengths) | 4.72 | **4.12** | 8.23 | 4.82 |
+| 4 × 256 × 16384, 8, 128 (KV lengths) | 0.914 | **0.886** | 1.37 | 1.20 |
+| 4 × 16384 × 256, 8, 64 (KV lengths) | 0.943 | 1.03 | **0.817** | 1.02 |
+| 4 × 128 × 262144, 8, 64 (KV lengths) | 9.15 | **6.42** | 12.8 | 10.4 |
+| 56 × 256 × 32768, 8, 32 (KV lengths) | 16.6 | 9.13 | 13.7 | **7.35** |
+| 28 × 256 × 131072, 8, 32 (KV lengths) | 33.9 | 19.9 | 26.4 | **15.7** |
+| 1008 × 1024 × 256, 8, 32 | 13.0 | 8.87 | 19.5 | **5.53** |
+
+For head_dim ≥ 64 Mosaic is up to 2.89× faster than the Triton kernels and close to cuDNN (Triton is faster at 4 × 16384 × 256, 8, 64 (KV lengths): few keys per query tile). cuDNN is faster where it applies, so the sm_90 default tries cuDNN first and lowers to Mosaic where cuDNN cannot compute the call (head_dim not a multiple of 8, or `PROBJAX_ATTENTION_CUDNN=0`). head_dim ≤ 32 is padded to 64 and therefore stays on Triton. In rows with a single valid key the exact dQ and dK are 0 and carry ~1e-1 rounding noise from the kernel's approximate `exp2` (upstream `approx_math`); Triton's is ~1e-5. Masks other than `KVLenMask` and equal-length causal (local windows, segments, functional biases) are not in the Mosaic kernel yet.
 
 ## Attention suite
 

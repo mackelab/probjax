@@ -78,7 +78,11 @@ class TuningConfig:
   def has_backward_blocks(self) -> bool:
     return self.block_q_dkv is not None
 
-def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = False):
+def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = False,
+                       kv_lengths=None):
+  """``kv_lengths`` (int32 [batch], optional): keys at positions >= kv_lengths[b]
+  are masked; whole KV tiles past the length are skipped.  Rows with no valid
+  key return zeros and an lse of +inf (zero gradients in the backward)."""
   assert cuda_versions is not None
   cuda_runtime_version = cuda_versions.cuda_runtime_get_version()
   # TODO(pobudzey): Undo when we upgrade to cuda 12.9.1.
@@ -113,7 +117,11 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
   if kv_seq_len % block_kv:
     raise ValueError(f"{kv_seq_len=} must be a multiple of {block_kv=}")
 
-  def kernel(q_ref, k_ref, v_ref, out_ref, lse_ref, scoped):
+  has_lengths = kv_lengths is not None
+  if has_lengths and config.causal:
+    raise NotImplementedError("kv_lengths with causal masking is not supported yet")
+
+  def kernel(q_ref, k_ref, v_ref, kvlen_ref, out_ref, lse_ref, scoped):
     batch = lax.axis_index("batch")
     q_head = lax.axis_index("heads")
     smem_buffers, buffer_barriers, consumed_barriers, schedule_barrier = scoped
@@ -128,6 +136,11 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
     if config.causal:
       block_q_end = (lax.axis_index("q_seq") + 1) * (2 * block_q)
       block_max_kv_steps = pl.cdiv(block_q_end, jnp.array(block_kv, jnp.int32))
+    elif has_lengths:
+      kv_len = jnp.minimum(kvlen_ref[batch], jnp.array(kv_seq_len, jnp.int32))
+      kv_len = jnp.maximum(kv_len, jnp.array(0, jnp.int32))
+      block_max_kv_steps = pl.cdiv(kv_len, jnp.array(block_kv, jnp.int32))
+      full_kv_steps_len = lax.div(kv_len, jnp.array(block_kv, jnp.int32))
     else:
       block_max_kv_steps = kv_seq_len // block_kv
 
@@ -168,7 +181,7 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
         plgpu.barrier_wait(k_barriers.at[0])
 
       pl.when(wg_idx == 1)(perform_schedule_barrier)
-      def kv_loop(kv_step, carry, causal: bool = False):
+      def kv_loop(kv_step, carry, causal: bool = False, length_mask: bool = False):
         acc, m_i, l_i = carry
         slot = lax.rem(kv_step, jnp.array(max_concurrent_steps, kv_step.dtype))
 
@@ -185,6 +198,9 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
           kv_ids = plgpu.broadcasted_iota(jnp.int32, (block_q, block_kv), 1, layout=plgpu.Layout.WGMMA)
           mask = (q_ids + q_seq_base) >= (kv_ids + kv_step * block_kv)
           qk = jnp.where(mask, qk, -jnp.inf)
+        if length_mask:
+          kv_ids = plgpu.broadcasted_iota(jnp.int32, (block_q, block_kv), 1, layout=plgpu.Layout.WGMMA)
+          qk = jnp.where(kv_ids + kv_step * block_kv < kv_len, qk, -jnp.inf)
 
         # Softmax
         # We keep m scaled by log2e to use FMA instructions when computing p.
@@ -224,7 +240,13 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
         plgpu.barrier_arrive(v_consumed_barriers.at[slot])
         return acc, m_i, l_i
 
-      if not config.causal:
+      if has_lengths:
+        # Full tiles without a mask, then the partial last tile (if any).
+        acc, m_i, l_i = lax.fori_loop(0, full_kv_steps_len, kv_loop, (acc, m_i, l_i))
+        acc, m_i, l_i = lax.fori_loop(
+            full_kv_steps_len, block_max_kv_steps,
+            functools.partial(kv_loop, length_mask=True), (acc, m_i, l_i))
+      elif not config.causal:
         acc, m_i, l_i = lax.fori_loop(0, block_max_kv_steps, kv_loop, (acc, m_i, l_i))
       else:
         def epilogue_kv_loop(kv_step, _):
@@ -248,12 +270,19 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
       pl.when(wg_idx == 0)(perform_schedule_barrier)
 
       # TODO(apaszke): Invert and multiply to avoid expensive divisions.
+      if has_lengths:
+        # Rows without a valid key (kv_len == 0): output 0, lse +inf.
+        empty = l_i == 0
+        l_i = jnp.where(empty, jnp.ones_like(l_i), l_i)
       acc /= lax.broadcast_in_dim(l_i, (block_q, head_dim), [0])
       qo_smem[...] = acc.astype(dtype)
       if lse_smem is not None:
         RCP_LN2 = 1.4426950408889634
         log2 = lambda x: jnp.log(x) * RCP_LN2
-        lse_smem[...] = m_i + log2(l_i)
+        lse = m_i + log2(l_i)
+        if has_lengths:
+          lse = jnp.where(empty, jnp.full_like(lse, jnp.inf), lse)
+        lse_smem[...] = lse
       plgpu.commit_smem()
       plgpu.copy_smem_to_gmem(
           qo_smem, out_ref.at[batch, pl.ds(q_seq_base, block_q), q_head],
@@ -270,8 +299,15 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
       kv_head = lax.div(q_head, jnp.array(q_heads_per_kv_head, q_head.dtype))
       for i in range(max_concurrent_steps):
         s = (batch, pl.ds(i * block_kv, block_kv), kv_head)
-        plgpu.copy_gmem_to_smem(k_ref.at[s], k_smem.at[i], k_barriers.at[i])
-        plgpu.copy_gmem_to_smem(v_ref.at[s], v_smem.at[i], v_barriers.at[i])
+        if has_lengths:
+          # Short contexts: never prefetch tiles the compute loop won't consume.
+          @pl.when(i < block_max_kv_steps)
+          def _prefetch(s=s, i=i):
+            plgpu.copy_gmem_to_smem(k_ref.at[s], k_smem.at[i], k_barriers.at[i])
+            plgpu.copy_gmem_to_smem(v_ref.at[s], v_smem.at[i], v_barriers.at[i])
+        else:
+          plgpu.copy_gmem_to_smem(k_ref.at[s], k_smem.at[i], k_barriers.at[i])
+          plgpu.copy_gmem_to_smem(v_ref.at[s], v_smem.at[i], v_barriers.at[i])
 
       @pl.loop(0, block_max_kv_steps - max_concurrent_steps)
       def _kv_loop(kv_step):
@@ -283,7 +319,11 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
         plgpu.barrier_wait(v_consumed_barriers.at[tma_slot])
         plgpu.copy_gmem_to_smem(v_ref.at[s], v_smem.at[tma_slot], v_barriers.at[tma_slot])
 
-  def entry(q_ref, k_ref, v_ref, out_ref, lse_ref):
+  def entry(q_ref, k_ref, v_ref, *refs):
+    if has_lengths:
+      kvlen_ref, out_ref, lse_ref = refs
+    else:
+      (out_ref, lse_ref), kvlen_ref = refs, None
     compute_wgs = 2
     tiling = plgpu.TilingTransform((8, 64))
     swizzle = plgpu.SwizzleTransform(128)
@@ -303,7 +343,7 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
     if save_residuals:
       scratch[3] = plgpu.SMEM((compute_wgs, block_q), jnp.float32)
     pl.run_scoped(
-        lambda *args: kernel(q_ref, k_ref, v_ref, out_ref, lse_ref, args),
+        lambda *args: kernel(q_ref, k_ref, v_ref, kvlen_ref, out_ref, lse_ref, args),
         scratch,
         (
             plgpu.Barrier(num_barriers=max_concurrent_steps),
@@ -335,7 +375,7 @@ def _attention_forward(q, k, v, config: TuningConfig, save_residuals: bool = Fal
       num_threads=3,
       thread_name="wg",
       compiler_params=plgpu.CompilerParams(approx_math=True),
-  )(q, k, v)
+  )(q, k, v, *([kv_lengths.astype(jnp.int32)] if has_lengths else []))
 
   if save_residuals:
     assert lse is not None
@@ -354,9 +394,12 @@ def _attention_fwd(q, k, v, config: TuningConfig, save_residuals: bool):
   out, (lse,) = _attention_forward(q, k, v, config, save_residuals=True)
   return out, (q, k, v, out, lse)
 
-def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
+def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do, kv_lengths=None):
+  """``kv_lengths``: as in ``_attention_forward`` (keys past the length get zero
+  dK/dV and contribute nothing to dQ)."""
   del save_residuals
   q, k, v, out, lse = res
+  has_lengths = kv_lengths is not None
 
   if config.causal:
     raise NotImplementedError("Causal attention not supported in the backwards pass yet.")
@@ -399,8 +442,12 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
   delta = jnp.einsum('bqhd,bqhd->bhq', out.astype(jnp.float32), do.astype(jnp.float32))
   del out  # Not needed anymore.
 
-  def kernel_dq(q_ref, k_ref, v_ref, do_ref, lse_ref, delta_ref, dq_ref,
-                smem_buffers, buffer_barriers, block_q, block_kv):
+  def kernel_dq(q_ref, k_ref, v_ref, do_ref, lse_ref, delta_ref, *refs,
+                block_q, block_kv):
+    if has_lengths:
+      kvlen_ref, dq_ref, smem_buffers, buffer_barriers = refs
+    else:
+      (dq_ref, smem_buffers, buffer_barriers), kvlen_ref = refs, None
     batch = lax.axis_index("batch")
     q_head = lax.axis_index("heads")
     wg_idx = lax.axis_index("wg")
@@ -437,7 +484,7 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
       plgpu.copy_smem_to_gmem(q_smem, dq_ref.at[q_slice])
       plgpu.wait_smem_to_gmem(0)
 
-    def kv_pipeline(_, k_smem, v_smem, k_consumed_barrier, v_consumed_barrier, carry):
+    def kv_pipeline(indices, k_smem, v_smem, k_consumed_barrier, v_consumed_barrier, carry):
       q_smem, do_smem = q_smem2.at[wg_idx], do_smem2.at[wg_idx]
       (dq_acc, lse, delta) = carry
 
@@ -448,6 +495,9 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
       s = pl.run_scoped(compute_s, plgpu.ACC((block_q, block_kv), jnp.float32))
       s *= math.log2(math.e)
       p = jnp.exp2(s - lax.broadcast_in_dim(lse, (block_q, block_kv), [0]))
+      if has_lengths:
+        kv_ids = plgpu.broadcasted_iota(jnp.int32, (block_q, block_kv), 1, layout=plgpu.Layout.WGMMA)
+        p = jnp.where(kv_ids + indices[0] * block_kv < kvlen_ref[batch], p, 0.0)
 
       # dP
       def compute_dp(acc_ref):
@@ -492,8 +542,12 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
     v_ref = v_ref.at[batch, :, kv_head, :]
     pipeline(k_ref, v_ref)
 
-  def kernel_dkv(q_ref, k_ref, v_ref, do_ref, lse_ref, delta_ref,
-                 dk_ref, dv_ref, smem_buffers, buffer_barriers, block_q: int, block_kv: int):
+  def kernel_dkv(q_ref, k_ref, v_ref, do_ref, lse_ref, delta_ref, *refs,
+                 block_q: int, block_kv: int):
+    if has_lengths:
+      kvlen_ref, dk_ref, dv_ref, smem_buffers, buffer_barriers = refs
+    else:
+      (dk_ref, dv_ref, smem_buffers, buffer_barriers), kvlen_ref = refs, None
     batch = lax.axis_index("batch")
     q_head = lax.axis_index("heads")
     wg_idx = lax.axis_index("wg")
@@ -549,6 +603,10 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
       lse = plgpu.load(lse_smem, layout=plgpu.Layout.WGMMA.reduce(0))
       plgpu.barrier_arrive(lse_consumed_barrier)
       pT = jnp.exp2(sT - lax.broadcast_in_dim(lse, (block_kv, block_q), [1]))
+      if has_lengths:
+        kv_base = lax.axis_index("kv_seq") * (compute_wgs * block_kv) + wg_idx * block_kv
+        kv_rows = plgpu.broadcasted_iota(jnp.int32, (block_kv, block_q), 0, layout=plgpu.Layout.WGMMA)
+        pT = jnp.where(kv_rows + kv_base < kvlen_ref[batch], pT, 0.0)
 
       def _compute(refs):
         # Combining two WGMMA calls in one block to avoid the unnecessary
@@ -601,7 +659,33 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
     do_ref = do_ref.at[batch, :, q_head, :]
     lse_ref = lse_ref.at[batch, q_head, :]
     delta_ref = delta_ref.at[batch, q_head, :]
-    pipeline(q_ref, do_ref, lse_ref, delta_ref)
+    if not has_lengths:
+      pipeline(q_ref, do_ref, lse_ref, delta_ref)
+      return
+    # Programs whose whole KV span lies past this batch element's length skip the
+    # pipeline and store zero dK / dV (the condition is uniform per program).
+    span_start = lax.axis_index("kv_seq") * (compute_wgs * block_kv)
+    active = span_start < kvlen_ref[batch]
+
+    @pl.when(active)
+    def _run():
+      pipeline(q_ref, do_ref, lse_ref, delta_ref)
+
+    @pl.when(jnp.logical_and(jnp.logical_not(active), wg_idx < compute_wgs))
+    def _zeros():
+      k_smem, v_smem = k_smem2.at[wg_idx], v_smem2.at[wg_idx]
+      kv_seq_base = span_start + wg_idx * block_kv
+      zeros = plgpu.layout_cast(
+          jnp.full((block_kv, head_dim), 0, dtype=jnp.float32), plgpu.Layout.WGMMA)
+      k_smem[...] = zeros.astype(dtype)
+      v_smem[...] = zeros.astype(dtype)
+      plgpu.commit_smem()
+      plgpu.copy_smem_to_gmem(
+          k_smem, dk_ref.at[(batch, pl.ds(kv_seq_base, block_kv), q_head)], commit_group=False)
+      plgpu.copy_smem_to_gmem(
+          v_smem, dv_ref.at[(batch, pl.ds(kv_seq_base, block_kv), q_head)], commit_group=False)
+      plgpu.commit_smem_to_gmem_group()
+      plgpu.wait_smem_to_gmem(0)
 
   q_scratch = plgpu.SMEM(
       (compute_wgs, config.block_q_dq, head_dim), dtype,
@@ -622,7 +706,7 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
       grid_names=("heads", "q_seq", "batch"),
       num_threads=compute_wgs + 1,
       thread_name="wg",
-  )(q, k, v, do, lse, delta)
+  )(q, k, v, do, lse, delta, *([kv_lengths.astype(jnp.int32)] if has_lengths else []))
 
   k_scratch = plgpu.SMEM(
           (compute_wgs, config.block_kv_dkv, head_dim), dtype,
@@ -643,7 +727,7 @@ def _attention_bwd(config: TuningConfig, save_residuals: bool, res, do):
     grid_names=("heads", "kv_seq", "batch"),
     num_threads=compute_wgs + 1,
     thread_name="wg"
-  )(q, k, v, do, lse, delta)
+  )(q, k, v, do, lse, delta, *([kv_lengths.astype(jnp.int32)] if has_lengths else []))
 
   if q_heads_per_kv_head > 1:
     sum_shape = (*k.shape[:-1], q_heads_per_kv_head, head_dim)
