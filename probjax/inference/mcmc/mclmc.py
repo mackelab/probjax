@@ -11,13 +11,11 @@ from blackjax.mcmc.hmc import HMCInfo, HMCState
 from blackjax.mcmc.integrators import IntegratorState
 from blackjax.mcmc.mclmc import MCLMCInfo
 
-from probjax.inference.mcmc._dynamic_stepping import (
-    get_dynamic_stepping,
-    init_dynamic_arg,
-)
 from probjax.inference.mcmc.adaptation import step_size_adaptor
 from probjax.inference.mcmc.base import (
     MarkovKernelAPI,
+    get_dynamic_stepping,
+    init_dynamic_arg,
     init_hmc_like_params,
     scale_step_size_by_grad,
 )

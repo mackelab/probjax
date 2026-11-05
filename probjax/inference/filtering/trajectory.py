@@ -48,9 +48,16 @@ def _gaussian_backward_data(model, theta, initial, states, infos):
         return jax.jacfwd(lambda x: model.transition(theta, x, t_previous, t)[0])(mean)
 
     phis = jax.vmap(transition_matrix)(means[:-1], states.t[:-1], states.t[1:])
-    gains = jax.vmap(lambda cov, phi, pred: jnp.linalg.solve(pred, phi @ cov).T)(
-        covs[:-1], phis, pred_covs
-    )
+
+    def gain(cov, phi, pred):
+        # The RTS gain is Cov(x_t, x_{t+1}) @ pinv(Pred_{t+1}). A plain solve
+        # is wrong for rank-reduced filters, whose predicted covariance is
+        # genuinely singular (rank < state size); pinv restricts the correction
+        # to the retained subspace instead of producing inf/NaN.
+        cross = cov @ phi.T
+        return jnp.linalg.pinv(pred) @ cross.T
+
+    gains = jax.vmap(gain)(covs[:-1], phis, pred_covs)
     return means, covs, infos.mean_pred, pred_covs, gains
 
 
