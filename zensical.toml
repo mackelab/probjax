@@ -56,6 +56,7 @@ nav = [
     "benchmarks/gpu_attention.md",
     "benchmarks/gpu_kernels.md",
     "benchmarks/gpu_nn.md",
+    "benchmarks/gpu_h100.md",
   ] },
   { "Troubleshooting" = "troubleshooting.md" },
   { "Contributing" = "contributing.md" },

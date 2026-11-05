@@ -422,7 +422,7 @@ def mha_flash(
         )
 
     # Tiles: when the caller sets none, use the configuration tuned on H100
-    # (bf16, head_dim <= 128; docs/benchmarks/gpu_attention_h100.json): 64 x 128
+    # (bf16, head_dim <= 128; docs/benchmarks/gpu_attention_h100_device.json): 64 x 128
     # forward tiles, backward dK/dV 128 x 64 and dQ 64 x 128 with two compute
     # warpgroups -- 2.4-4.1x faster fwd+bwd than 128 x 128 / one warpgroup, and
     # within 8-17% of cuDNN.  Deeper pipelines or 128 x 128 tiles with two

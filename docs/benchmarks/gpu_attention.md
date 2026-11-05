@@ -6,6 +6,7 @@ Inputs are `[batch, seq, heads, head_dim]` with batch 4 and 8 heads unless state
 
 ## When to use which
 
+- **On an H100 (sm_90)** the defaults are device-specific: large bf16/fp16 calls with no mask, a `KVLenMask` or equal-length causal masking run cuDNN (1.2–3.6× faster fwd+bwd there), and `backward_pass_impl="auto"` resolves to the split backward. Rules and measurements: [H100 page](gpu_h100.md#device-specific-defaults). The rest of this page is the RTX 3090.
 - **Default (`dot_product_attention`, `implementation=None`).** On NVIDIA GPUs it runs the fused `flex_attention` kernel whenever that is exact (rules [below](#short-sequences-and-the-default-dispatch)); `flex_attention` and `mha` are the same kernel. Its memory grows linearly in T: fwd+bwd ran up to T = 65,536 (the largest length tried) at batch 4 and 8 heads, dense attention only up to T = 4,096.
 - **`jax.nn.dot_product_attention(implementation='cudnn')`** is faster in the bf16 configurations listed under [where an alternative is faster](#where-an-alternative-is-faster); use it there if you need neither probjax masks nor fp32.
 - **Dense attention** (`jax.nn` XLA, torch math, probjax `implementation='xla'`) materializes the T × T scores. In this grid `jax.nn` XLA fails from T = 8192 and torch math from T = 4096 (fwd+bwd); it is only competitive for short sequences.

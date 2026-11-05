@@ -6,7 +6,7 @@ compute-capability major version; devices without an entry keep the generic
 rules (shared-memory based tiles in ``pallas_kernels.kernels.attention``).
 
 sm_90 (H100) -- measured on an H100 NVL (94 GB), bf16, JAX 0.11.2, cuDNN 9.27
-(docs/benchmarks/gpu_attention_h100.json):
+(docs/benchmarks/gpu_attention_h100_device.json, gpu_attention_h100.json):
 
 * cuDNN's fused attention (``jax.nn.dot_product_attention(implementation=
   "cudnn")``) is 1.2-2.1x faster than the best Triton backward once the work
