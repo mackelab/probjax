@@ -36,7 +36,11 @@ from probjax.nn.pallas_kernels import (
 from probjax.nn.pallas_kernels.kernels.attention import _aligned_seq_len, use_splitkv
 from probjax.nn.pallas_kernels.kernels.attention_splitkv import splitkv_attention
 from probjax.nn.pallas_kernels.kernels.attention_xla import use_xla_attention
-from probjax.nn.layers.attention_device import cudnn_attention_or_none, resolve_auto_backward
+from probjax.nn.layers.attention_device import (
+    cudnn_attention_or_none,
+    mosaic_attention_or_none,
+    resolve_auto_backward,
+)
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
@@ -1247,15 +1251,16 @@ def dot_product_attention(
         # equal-length causal); None falls through to the rules below.
         batch_shape = query.shape[:-3]
         flat = [x.reshape((-1,) + x.shape[-3:]) for x in (query, key, value)]
-        out = cudnn_attention_or_none(
-            *flat,
-            mask=mask,
-            bias=bias,
-            dropout_rate=dropout_rate if not deterministic else 0.0,
-            sm_scale=sm_scale if sm_scale is not None else 1.0 / math.sqrt(query.shape[-1]),
-        )
-        if out is not None:
-            return out.reshape(batch_shape + out.shape[-3:])
+        for route in (cudnn_attention_or_none, mosaic_attention_or_none):
+            out = route(
+                *flat,
+                mask=mask,
+                bias=bias,
+                dropout_rate=dropout_rate if not deterministic else 0.0,
+                sm_scale=sm_scale if sm_scale is not None else 1.0 / math.sqrt(query.shape[-1]),
+            )
+            if out is not None:
+                return out.reshape(batch_shape + out.shape[-3:])
     if implementation == "pallas" or (
         implementation is None
         and _use_fused_gpu_attention(
@@ -1454,10 +1459,13 @@ def flex_attention(
 
     ``implementation=None`` lets the device table
     (:mod:`probjax.nn.layers.attention_device`) pick the kernel when every
-    kernel argument is at its default -- on H100 that routes large bf16/fp16
-    calls with no mask, a ``KVLenMask`` or equal-length causal masking to
-    cuDNN and resolves ``backward_pass_impl="auto"`` for the Triton path.
-    ``"triton"`` always runs the Pallas kernels.
+    kernel argument is at its default -- on H100 large bf16/fp16 calls with no
+    mask, a ``KVLenMask`` or equal-length causal masking run cuDNN, or the
+    Mosaic GPU kernel (``mha_flash``) where cuDNN cannot take them, and
+    ``backward_pass_impl="auto"`` is resolved for the Triton path.
+    ``"triton"`` always runs the Pallas/Triton kernels; ``"cudnn"`` and
+    ``"mosaic"`` force those backends (ValueError if they cannot compute the
+    call exactly).
 
     ``key``/``value`` may have fewer heads than ``query`` when
     ``enable_gqa=True`` (query head ``h`` uses KV head ``h // (Hq // Hkv)``);
@@ -1521,8 +1529,25 @@ def flex_attention(
     value = value[None] if value.ndim == 3 else value
 
     active_dropout = dropout_rate if not deterministic and dropout_rate > 0 else 0.0
-    if implementation not in (None, "triton"):
-        raise ValueError(f"implementation must be None or 'triton', got {implementation!r}")
+    if implementation not in (None, "triton", "cudnn", "mosaic"):
+        raise ValueError(
+            "implementation must be None, 'triton', 'cudnn' or 'mosaic', "
+            f"got {implementation!r}"
+        )
+    if implementation in ("cudnn", "mosaic"):
+        route = cudnn_attention_or_none if implementation == "cudnn" else mosaic_attention_or_none
+        out = route(
+            query, key, value, mask=mask, bias=bias,
+            dropout_rate=active_dropout, sm_scale=sm_scale, force=True,
+        )
+        if out is None:
+            raise ValueError(
+                f"implementation={implementation!r} cannot compute this call exactly "
+                "(supported: bf16/fp16, no bias/dropout, no mask, KVLenMask or "
+                "equal-length causal, head_dim <= 128"
+                + (", a multiple of 8" if implementation == "cudnn" else ", an H100") + ")."
+            )
+        return out
     device_defaults = (
         implementation is None
         and not interpret
@@ -1536,12 +1561,13 @@ def flex_attention(
         == (128, 128, 64, 64, 64, 64)
     )
     if device_defaults:
-        out = cudnn_attention_or_none(
-            query, key, value, mask=mask, bias=bias,
-            dropout_rate=active_dropout, sm_scale=sm_scale,
-        )
-        if out is not None:
-            return out
+        for route in (cudnn_attention_or_none, mosaic_attention_or_none):
+            out = route(
+                query, key, value, mask=mask, bias=bias,
+                dropout_rate=active_dropout, sm_scale=sm_scale,
+            )
+            if out is not None:
+                return out
     if diff_mode == "reverse" and use_splitkv(
         query,
         key,

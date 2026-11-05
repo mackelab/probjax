@@ -120,17 +120,11 @@ def _cudnn_lengths(mask, q_len: int, kv_len: int):
     return "unsupported", False
 
 
-def cudnn_attention_or_none(
-    query, key, value, *, mask, bias, dropout_rate: float, sm_scale: float
-):
-    """cuDNN fused attention when the device table routes this call there.
+def _fused_eligible(query, key, value, *, mask, bias, dropout_rate: float):
+    """Shape/dtype/mask checks shared by the cuDNN and Mosaic routes.
 
-    Inputs are ``[B, T, H, D]`` (K/V may have fewer heads, GQA).  Returns the
-    output, or None to fall through to the Triton path.
+    Returns ``(B, l_q, h_q, dim, l_kv, kv_lengths, causal)`` or None.
     """
-    d = device_attention_defaults()
-    if d is None or _env_off("PROBJAX_ATTENTION_CUDNN"):
-        return None
     if bias is not None or dropout_rate > 0.0:
         return None
     if query.ndim != 4 or key.ndim != 4 or value.ndim != 4:
@@ -142,25 +136,52 @@ def cudnn_attention_or_none(
         return None
     B, l_q, h_q, dim = query.shape
     _, l_kv, h_kv, dim_k = key.shape
-    if dim != dim_k or value.shape[-1] != dim or dim % 8 or value.shape[:-1] != key.shape[:-1]:
+    if dim != dim_k or value.shape[-1] != dim or value.shape[:-1] != key.shape[:-1]:
         return None
     if h_q % h_kv:
-        return None
-    bd = max(32, 1 << (dim - 1).bit_length())
-    min_work = d.cudnn_min_work.get(bd)
-    if min_work is None:
-        return None
-    if B * h_q * l_q * l_kv < min_work:
-        return None
-    if l_kv <= d.cudnn_short_kv and l_q >= d.cudnn_short_kv_ratio * l_kv:
-        return None
-    if l_q <= d.cudnn_min_q and l_kv >= d.onepass_kv_ratio * l_q:
         return None
     lengths = _cudnn_lengths(mask, l_q, l_kv)
     if isinstance(lengths[0], str):
         return None
     kv_lengths, causal = lengths
     if kv_lengths is not None and kv_lengths.shape != (B,):
+        return None
+    return B, l_q, h_q, dim, l_kv, kv_lengths, causal
+
+
+def _worth_fusing(d: DeviceAttentionDefaults, B, l_q, h_q, dim, l_kv) -> bool:
+    """Work threshold and the Triton-favoured regions (measured on H100)."""
+    bd = max(32, 1 << (dim - 1).bit_length())
+    min_work = d.cudnn_min_work.get(bd)
+    if min_work is None or B * h_q * l_q * l_kv < min_work:
+        return False
+    if l_kv <= d.cudnn_short_kv and l_q >= d.cudnn_short_kv_ratio * l_kv:
+        return False
+    if l_q <= d.cudnn_min_q and l_kv >= d.onepass_kv_ratio * l_q:
+        return False
+    return True
+
+
+def cudnn_attention_or_none(
+    query, key, value, *, mask, bias, dropout_rate: float, sm_scale: float,
+    force: bool = False,
+):
+    """cuDNN fused attention when the device table routes this call there.
+
+    Inputs are ``[B, T, H, D]`` (K/V may have fewer heads, GQA).  Returns the
+    output, or None to fall through (``force=True``: skip the device table and
+    the thresholds, only check that cuDNN computes the call exactly).
+    """
+    d = device_attention_defaults()
+    if not force and (d is None or _env_off("PROBJAX_ATTENTION_CUDNN")):
+        return None
+    e = _fused_eligible(query, key, value, mask=mask, bias=bias, dropout_rate=dropout_rate)
+    if e is None:
+        return None
+    B, l_q, h_q, dim, l_kv, kv_lengths, causal = e
+    if dim % 8 or dim > 128:
+        return None
+    if not force and not _worth_fusing(d, B, l_q, h_q, dim, l_kv):
         return None
     return jax.nn.dot_product_attention(
         query,
@@ -170,4 +191,47 @@ def cudnn_attention_or_none(
         is_causal=causal,
         key_value_seq_lengths=kv_lengths,
         implementation="cudnn",
+    )
+
+
+def mosaic_attention_or_none(
+    query, key, value, *, mask, bias, dropout_rate: float, sm_scale: float,
+    force: bool = False,
+):
+    """Mosaic GPU (Hopper FlashAttention-3, ``mha_flash``) when routed there.
+
+    On sm_90 default calls try cuDNN first; this covers what cuDNN does not
+    take (head_dim not a multiple of 8, ``PROBJAX_ATTENTION_CUDNN=0``) with the
+    same masks: none, ``KVLenMask`` and equal-length causal (unpadded).  Keys
+    and queries of any length are padded exactly.  ``force=True`` skips the
+    device table and thresholds.
+    """
+    d = device_attention_defaults()
+    if not force and (d is None or _env_off("PROBJAX_ATTENTION_MOSAIC")):
+        return None
+    if _compute_capability_major() != 9:
+        return None
+    e = _fused_eligible(query, key, value, mask=mask, bias=bias, dropout_rate=dropout_rate)
+    if e is None:
+        return None
+    B, l_q, h_q, dim, l_kv, kv_lengths, causal = e
+    # head_dim <= 32 is padded to 64 (twice the work): Triton is faster there
+    # (ISAB 256 x 32768, d32, KV lengths: Mosaic 16.4 ms, Triton 13.6 ms).
+    if dim > 128 or (dim <= 32 and not force):
+        return None
+    if causal and (l_q % 128 or l_kv % 128):
+        return None
+    if not force and not _worth_fusing(d, B, l_q, h_q, dim, l_kv):
+        return None
+    from probjax.nn.pallas_kernels import KVLenMask
+    from probjax.nn.pallas_kernels.kernels.flash_attention3 import mha_flash
+
+    return mha_flash(
+        query,
+        key,
+        value,
+        mask=None if kv_lengths is None else KVLenMask(kv_lengths),
+        sm_scale=sm_scale,
+        enable_gqa=query.shape[-2] != key.shape[-2],
+        causal=causal,
     )
