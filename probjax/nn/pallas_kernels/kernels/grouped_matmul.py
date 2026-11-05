@@ -201,6 +201,16 @@ _MOSAIC_BLOCK: dict[str, Any] = dict(
     block_m=128, block_n=128, block_k=64, max_concurrent_steps=2, grid_block_n=1
 )
 _MOSAIC_ALIGN = 128
+# The sorted-row axis must be shorter than, or a multiple of, the kernels' row
+# tiling; padding rows join the last group (zeros: no effect on y, dx or dw).
+_MOSAIC_ROW_TILE = 8
+
+
+def _pad_rows_into_last_group(group_sizes: Array, x: Array) -> tuple[Array, Array]:
+    pad = -x.shape[0] % _MOSAIC_ROW_TILE
+    if pad == 0:
+        return group_sizes, x
+    return group_sizes.at[-1].add(pad), jnp.pad(x, ((0, pad), (0, 0)))
 
 
 def is_hopper() -> bool:
@@ -209,6 +219,19 @@ def is_hopper() -> bool:
         return False
     cc = str(getattr(jax.devices()[0], "compute_capability", ""))
     return cc.split(".")[0] == "9"
+
+
+def mosaic_supports_dtype(dtype) -> bool:
+    """Mosaic's wgmma kernels need 16-bit operands (the backward transposes)."""
+    return jnp.dtype(dtype).itemsize == 2
+
+
+def _check_mosaic_dtype(x: Array) -> None:
+    if not mosaic_supports_dtype(x.dtype):
+        raise ValueError(
+            f"the Mosaic GPU ragged matmul needs float16/bfloat16 operands, got "
+            f"{x.dtype}; use the Triton grouped matmul (backend='triton') for it"
+        )
 
 
 def _mosaic_ragged_impl(group_sizes, x, w, *, transpose_rhs):
@@ -263,32 +286,38 @@ def mosaic_ragged_matmul(
 ) -> Array:
     """Sorted rows ``[M, K]`` times ``w[g]`` (``[G, K, N]``, or ``[G, N, K]``
     with ``transpose_rhs``) -> ``[M, N]``.  Hopper only."""
+    _check_mosaic_dtype(x)
     k_axis, n_axis = (2, 1) if transpose_rhs else (1, 2)
-    n = w.shape[n_axis]
+    m, n = x.shape[0], w.shape[n_axis]
     w = _pad_to(
         _pad_to(w.astype(x.dtype), k_axis, _MOSAIC_ALIGN), n_axis, _MOSAIC_ALIGN
     )
+    group_sizes, x = _pad_rows_into_last_group(group_sizes.astype(jnp.int32), x)
     out = shardable_kernel(
         _mosaic_ragged_primitive(transpose_rhs),
         {
-            "group_sizes": group_sizes.astype(jnp.int32),
+            "group_sizes": group_sizes,
             "x": _pad_to(x, 1, _MOSAIC_ALIGN),
             "w": w,
         },
         transpose_rhs=transpose_rhs,
     )
-    return out[:, :n]
+    return out[:m, :n]
 
 
 def mosaic_transposed_matmul(group_sizes: Array, x: Array, dy: Array) -> Array:
     """``dw[g] = x_g^T dy_g`` over sorted rows: ``[G, K, N]``.  Hopper only."""
+    _check_mosaic_dtype(x)
     k, n = x.shape[1], dy.shape[1]
+    gs = group_sizes.astype(jnp.int32)
+    group_sizes, x = _pad_rows_into_last_group(gs, x)
+    _, dy = _pad_rows_into_last_group(gs, dy.astype(x.dtype))
     out = shardable_kernel(
         _mosaic_transposed_primitive(),
         {
-            "group_sizes": group_sizes.astype(jnp.int32),
+            "group_sizes": group_sizes,
             "x": _pad_to(x, 1, _MOSAIC_ALIGN),
-            "dy": _pad_to(dy.astype(x.dtype), 1, _MOSAIC_ALIGN),
+            "dy": _pad_to(dy, 1, _MOSAIC_ALIGN),
         },
     )
     return out[:, :k, :n]

@@ -67,10 +67,10 @@ def main():
                 model = build(impl, dispatch, a.d_model, a.width, a.experts, a.top_k, a.shared)
                 gd, params = nnx.split(model, nnx.Param)
 
-                def fwd(params, x):
+                def fwd(params, x, gd=gd):
                     return nnx.merge(gd, params)(x)
 
-                def loss(params, x):
+                def loss(params, x, g=g, fwd=fwd):
                     y = fwd(params, x)
                     y = y[0] if isinstance(y, tuple) else y
                     return jnp.sum(y.astype(jnp.float32) * g)
@@ -90,7 +90,7 @@ def main():
                     rel = lambda u, v: float(jnp.max(jnp.abs(u.astype(jnp.float32) - v.astype(jnp.float32)))
                                              / (jnp.max(jnp.abs(v.astype(jnp.float32))) + 1e-6))
                     rec.update(out_err=rel(y, ref[0]), gx_err=rel(gx, ref[1]),
-                               gw_err=max(rel(u, v) for u, v in zip(leaves, ref[2])))
+                               gw_err=max(rel(u, v) for u, v in zip(leaves, ref[2], strict=True)))
                 rec["status"] = "ok"
             except Exception as exc:  # noqa: BLE001
                 rec.update(status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}")

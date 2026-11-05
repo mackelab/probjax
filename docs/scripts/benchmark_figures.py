@@ -731,14 +731,15 @@ def gpu_name() -> str:
     return d["gpu"].replace("NVIDIA GeForce ", "")
 
 
-def att_seqs(**filt):
-    return sorted({r["seq"] for r in rows(GA, **filt)})
+def att_seqs(src=None, **filt):
+    return sorted({r["seq"] for r in rows(src or GA, **filt)})
 
 
-def att_series(impls, **filt):
+def att_series(impls, src=None, **filt):
+    src = src or GA
     out = []
     for i in impls:
-        data = {s: get(GA, impl=i, seq=s, **filt) for s in att_seqs(**filt)}
+        data = {s: get(src, impl=i, seq=s, **filt) for s in att_seqs(src, **filt)}
         if any(v is not None for v in data.values()):
             out.append((i, data))
     return out
@@ -750,7 +751,19 @@ def seq_range(seqs) -> str:
 
 
 # =========================================================================== attention
-def attention_figures() -> dict[str, str]:
+def _h100_mosaic() -> bool:
+    from docs.scripts.benchmark_figures_h100 import has_mosaic_backend
+
+    return has_mosaic_backend()
+
+
+def attention_time_figures(src: str = GA, suffix: str = "") -> dict[str, str]:
+    """Time (bf16, fp32) and relative-to-default figures of one attention suite.
+
+    ``src`` is the suite's JSON (``gpu_attention`` on the RTX 3090,
+    ``gpu_attention_h100`` on the H100); ``suffix`` is appended to the figure
+    file names.
+    """
     figs = {}
     configs = [(64, False), (64, True), (128, False), (128, True)]
     pow2 = lambda s: s & (s - 1) == 0  # noqa: E731
@@ -759,8 +772,8 @@ def attention_figures() -> dict[str, str]:
         for mode in ("fwd", "fwd_bwd"):
             for d, causal in configs:
                 f = dict(dtype=dt, head_dim=d, causal=causal, mode=mode)
-                ser = att_series(ATT_IMPLS, **f)
-                ticks = [s for s in att_seqs(**f) if pow2(s)]
+                ser = att_series(ATT_IMPLS, src, **f)
+                ticks = [s for s in att_seqs(src, **f) if pow2(s)]
                 title = f"{mode_label(mode)} · d={d} · {'causal' if causal else 'non-causal'}"
                 panels.append(
                     lambda ax, ser=ser, title=title, ticks=ticks, first=(d, causal) == (64, False): (
@@ -775,7 +788,7 @@ def attention_figures() -> dict[str, str]:
                     )
                 )
         figs[f"time_{dt}"] = save_figure(
-            f"attention_time_{DT[dt]}", panels, 4, width=9.5, panel_h=2.35
+            f"attention_time_{DT[dt]}{suffix}", panels, 4, width=9.5, panel_h=2.35
         )
     # relative to the probjax default
     panels = []
@@ -783,17 +796,17 @@ def attention_figures() -> dict[str, str]:
         for d, causal in configs:
             f = dict(dtype=dt, head_dim=d, causal=causal, mode="fwd_bwd")
             base = {
-                s: get(GA, impl="probjax_default", seq=s, **f) for s in att_seqs(**f)
+                s: get(src, impl="probjax_default", seq=s, **f) for s in att_seqs(src, **f)
             }
             ser = []
             for i in ATT_IMPLS[1:]:
                 data = {}
                 for s, b in base.items():
-                    v = get(GA, impl=i, seq=s, **f)
+                    v = get(src, impl=i, seq=s, **f)
                     data[s] = v / b if isnum(v) and isnum(b) else v
                 if any(v is not None for v in data.values()):
                     ser.append((i, data))
-            ticks = [s for s in att_seqs(**f) if pow2(s)]
+            ticks = [s for s in att_seqs(src, **f) if pow2(s)]
             title = f"{DT[dt]} · d={d} · {'causal' if causal else 'non-causal'}"
             panels.append(
                 lambda ax, ser=ser, title=title, ticks=ticks, first=(d, causal) == (64, False): (
@@ -810,8 +823,13 @@ def attention_figures() -> dict[str, str]:
                 )
             )
     figs["relative"] = save_figure(
-        "attention_relative", panels, 4, width=9.5, panel_h=2.35
+        f"attention_relative{suffix}", panels, 4, width=9.5, panel_h=2.35
     )
+    return figs
+
+
+def attention_figures() -> dict[str, str]:
+    figs = attention_time_figures()
 
     # device peak
     M = "kernel_attn_gpu_memory"
@@ -1194,6 +1212,20 @@ def page_attention(figs) -> str:
     )
 
     A("## When to use which\n")
+    from docs.scripts.benchmark_figures_h100 import (
+        cudnn_speedup_range,
+        has_mosaic_backend,
+    )
+
+    sp = cudnn_speedup_range()
+    A(
+        "- **On an H100 (sm_90)** the defaults are device-specific: large bf16/fp16 calls with "
+        "no mask, a `KVLenMask` or equal-length causal masking run cuDNN"
+        + (f" ({sp[0]:.1f}–{sp[1]:.1f}× faster fwd+bwd there)" if sp else "")
+        + (" or, where cuDNN cannot take them, the Mosaic GPU kernel;" if has_mosaic_backend() else ",")
+        + " and `backward_pass_impl=\"auto\"` resolves to the split backward. Rules and measurements: "
+        f"[H100 page](gpu_h100.md#device-specific-defaults). The rest of this page is the {gpu_name()}.\n"
+    )
     M = "kernel_attn_gpu_memory"
     swept = max(r["seq"] for r in rows(M, suite="peak"))
     pj_max = get(M, "max_seq_ok", suite="peak_max_seq", impl="probjax_default")
@@ -3508,6 +3540,14 @@ def page_overview(glance, fig) -> str:
         "Sinkhorn / OT, MoE grouped matmul.\n"
         "- [Models](gpu_nn.md): `Transformer` / `DiffusionTransformer` per `attention_fn`, "
         "`scan_layers` and `remat_policy`, `SSMModel` cells, `UNet`, `MoELayer`.\n"
+        "- [H100 (Hopper)](gpu_h100.md): the same suites on an H100, H100 vs RTX 3090, the "
+        "device-specific attention defaults for sm_90"
+        + (" (cuDNN routing, the Mosaic GPU backend, backward choice)" if _h100_mosaic() else "")
+        + ", MoE dispatch on H100, and PyTorch (`flex_attention`, SDPA) on H100.\n\n"
+        f"**Devices.** These pages measure the {gpu_name()} unless they say otherwise; the H100 "
+        "results are on [their own page](gpu_h100.md). Defaults can differ per device: on sm_90 "
+        "`flex_attention` / `dot_product_attention` route large bf16 calls to cuDNN and resolve "
+        "`backward_pass_impl=\"auto\"` differently ([rules](gpu_h100.md#device-specific-defaults)).\n"
     )
     A("## At a glance\n")
     A(
@@ -3725,11 +3765,15 @@ def main(argv=None) -> None:
     nnf = nn_figures()
     glance = glance_rows()
     ov = overview_figure(glance)
+    from docs.scripts import benchmark_figures_h100 as h100
+
+    h100_figs = h100.h100_figures()
     if not args.no_pages:
         _write("gpu_attention", page_attention(att))
         _write("gpu_kernels", page_kernels(ker))
         _write("gpu_nn", page_nn(nnf))
         _write("gpu_overview", page_overview(glance, ov))
+        _write("gpu_h100", h100.page_h100(h100_figs))
     for name in FIGURES:
         size = (FIG / f"{name}.svg").stat().st_size
         print(f"figures/{name}.svg  {size / 1024:.0f} KiB")

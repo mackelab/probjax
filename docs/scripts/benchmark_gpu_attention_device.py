@@ -24,7 +24,6 @@ import traceback
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 
 # name: (B, Lq, Lkv, H, D, masked)
 SHAPES = {
@@ -80,7 +79,7 @@ def _impls(names):
     def flex(backward, blocks=None, fwd=None, warps=None, stages=2):
         kw = dict(backward_pass_impl=backward, num_stages=stages)
         if blocks:
-            kw.update(zip(("block_q_dkv", "block_kv_dkv", "block_q_dq", "block_kv_dq"), blocks))
+            kw.update(zip(("block_q_dkv", "block_kv_dkv", "block_q_dq", "block_kv_dq"), blocks, strict=True))
         if fwd:
             kw.update(block_q=fwd[0], block_k=fwd[1])
         if warps:
@@ -108,10 +107,10 @@ def _impls(names):
             out[n] = mosaic
         elif n.startswith("mosaic:"):
             # mosaic:bq,bkv,steps,wgs_bwd[,bq_dkv,bkv_dkv,bq_dq,bkv_dq]
-            v = [int(x) for x in n.split(":")[1].split(",")]
-            kw = dict(block_q=v[0], block_kv=v[1], max_concurrent_steps=v[2], compute_wgs_bwd=v[3])
-            if len(v) == 8:
-                kw.update(block_q_dkv=v[4], block_kv_dkv=v[5], block_q_dq=v[6], block_kv_dq=v[7])
+            t = [int(x) for x in n.split(":")[1].split(",")]
+            kw = dict(block_q=t[0], block_kv=t[1], max_concurrent_steps=t[2], compute_wgs_bwd=t[3])
+            if len(t) == 8:
+                kw.update(block_q_dkv=t[4], block_kv_dkv=t[5], block_q_dq=t[6], block_kv_dq=t[7])
 
             def mk(kw=kw):
                 from probjax.nn.pallas_kernels.kernels.flash_attention3 import mha_flash
@@ -163,7 +162,7 @@ def _torch_case(impl, q, k, v, do, lens, reps):
     tdo = tt(do).transpose(1, 2).contiguous()
     B, H, Lq, D = tq.shape
     Hkv, Lkv = tk.shape[1], tk.shape[2]
-    gqa = H != Hkv
+    gqa = Hkv != H
     if impl == "torch:flex":
         from torch.nn.attention.flex_attention import create_block_mask, flex_attention
         if _TORCH_FLEX is None:
@@ -221,10 +220,17 @@ def _torch_case(impl, q, k, v, do, lens, reps):
         back = lambda t: jnp.asarray(t.detach().float().transpose(1, 2).cpu().numpy())
         res = (fwd_ms, fb_ms, back(out), tuple(back(t.grad) for t in (tq, tk, tv)))
     finally:
-        # Return torch's cached blocks so the next JAX reference has the memory.
-        del tq, tk, tv, tdo
+        # Cached blocks of earlier cases; this case's tensors are released when
+        # the caller drops them (see `_release_torch_memory`).
         torch.cuda.empty_cache()
     return res
+
+
+def _release_torch_memory():
+    """Return torch's cached blocks so the next JAX reference has the memory."""
+    import torch
+
+    torch.cuda.empty_cache()
 
 
 def _time(fn, args, reps):
@@ -251,7 +257,8 @@ def main():
 
     shapes = list(itertools.chain.from_iterable(GROUPS.get(s, [s]) for s in args.shapes))
     if args.impls_file:
-        args.impls = [l.strip() for l in open(args.impls_file) if l.strip() and not l.startswith("#")]
+        with open(args.impls_file) as fh:
+            args.impls = [ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")]
     impls = _impls(args.impls)
     ref_impl = _impls(["flex:triton_split"])["flex:triton_split"]
     dev = jax.devices()[0]
@@ -271,22 +278,23 @@ def main():
         do = jax.random.normal(kd, (B, Lq, H, D), jnp.bfloat16)
         lens = (jax.random.randint(kl, (B,), Lkv // 2, Lkv + 1).astype(jnp.int32) if masked else None)
 
-        def fwd_bwd(f):
-            def loss(q, k, v):
-                return jnp.sum(f(q, k, v, lens).astype(jnp.float32) * do.astype(jnp.float32))
+        def fwd_bwd(f, lens=lens, do=do):
+            def loss(q_, k_, v_):
+                return jnp.sum(f(q_, k_, v_, lens).astype(jnp.float32) * do.astype(jnp.float32))
             return jax.jit(jax.grad(loss, argnums=(0, 1, 2)))
 
-        ref_out = jax.jit(lambda q, k, v: ref_impl(q, k, v, lens))(q, k, v)
+        ref_out = jax.jit(lambda q, k, v, lens=lens: ref_impl(q, k, v, lens))(q, k, v)
         ref_g = fwd_bwd(ref_impl)(q, k, v)
         for iname, f in impls.items():
             rec = dict(meta, shape=sname, B=B, Lq=Lq, Lkv=Lkv, H=H, D=D, masked=masked, impl=iname)
             if iname.startswith("torch:"):
                 try:
                     fm, fbm, o, g = _torch_case(iname, q, k, v, do, lens, args.reps)
+                    _release_torch_memory()
                     rec.update(fwd_ms=round(fm, 3), fwd_bwd_ms=round(fbm, 3), status="ok",
                                out_err=float(jnp.max(jnp.abs(o - ref_out.astype(jnp.float32)))),
                                grad_err=[float(jnp.max(jnp.abs(a - b.astype(jnp.float32))))
-                                         for a, b in zip(g, ref_g)])
+                                         for a, b in zip(g, ref_g, strict=True)])
                 except Exception as exc:  # noqa: BLE001
                     rec.update(status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
                 print(json.dumps(rec), flush=True)
@@ -296,16 +304,17 @@ def main():
             try:
                 if iname.startswith("mosaic") and masked:
                     rec["note"] = "unmasked (no mask support)"
-                fj = jax.jit(lambda q, k, v, f=f: f(q, k, v, None if iname.startswith("mosaic") else lens))
+                unmasked = iname.startswith("mosaic")
+                fj = jax.jit(lambda q, k, v, f=f, m=None if unmasked else lens: f(q, k, v, m))
                 rec["fwd_ms"] = round(_time(fj, (q, k, v), args.reps), 3)
-                gj = fwd_bwd((lambda q, k, v, l, f=f: f(q, k, v, None)) if iname.startswith("mosaic") else f)
+                gj = fwd_bwd((lambda q, k, v, _lens, f=f: f(q, k, v, None)) if unmasked else f)
                 rec["fwd_bwd_ms"] = round(_time(gj, (q, k, v), args.reps), 3)
                 if not iname.startswith("mosaic"):
                     o = fj(q, k, v)
                     g = gj(q, k, v)
                     rec["out_err"] = float(jnp.max(jnp.abs(o.astype(jnp.float32) - ref_out.astype(jnp.float32))))
                     rec["grad_err"] = [float(jnp.max(jnp.abs(a.astype(jnp.float32) - b.astype(jnp.float32))))
-                                       for a, b in zip(g, ref_g)]
+                                       for a, b in zip(g, ref_g, strict=True)]
                 rec["status"] = "ok"
             except Exception as exc:  # noqa: BLE001
                 rec["status"] = "error"

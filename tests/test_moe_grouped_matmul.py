@@ -128,6 +128,34 @@ def test_hopper_mosaic_path_matches_ragged_dot():
         assert _rel(a.astype(jnp.float32), b) < 1e-2
 
 
+@pytest.mark.skipif(
+    not __import__("probjax.nn.pallas_kernels.kernels.grouped_matmul",
+                   fromlist=["is_hopper"]).is_hopper(),
+    reason="Mosaic-GPU ragged dot needs an sm_90 GPU",
+)
+def test_hopper_mosaic_path_pads_unaligned_rows_and_rejects_fp32():
+    """Row counts off the kernels' 8-row tiling (here 42) are padded into the last
+    group; float32 operands raise instead of failing inside wgmma lowering."""
+    from probjax.nn.layers.grouped_matmul import ragged_matmul_hopper
+
+    gs = jnp.array([20, 0, 17, 5], jnp.int32)
+    x = jax.random.normal(jax.random.key(0), (42, 64), jnp.bfloat16)
+    w = jax.random.normal(jax.random.key(1), (4, 64, 96), jnp.bfloat16) / 8
+    f = lambda fn: (lambda x, w: jnp.sum(jnp.sin(fn(x, w).astype(jnp.float32))))
+    ours = lambda x, w: ragged_matmul_hopper(x, w, gs)
+    ref = lambda x, w: jax.lax.ragged_dot(x.astype(jnp.float32), w.astype(jnp.float32), gs)
+    out = jax.jit(ours)(x, w)
+    assert out.shape == (42, 96)
+    assert _rel(out.astype(jnp.float32), ref(x, w)) < 1e-2
+    ga = jax.jit(jax.grad(f(ours), argnums=(0, 1)))(x, w)
+    gb = jax.grad(f(ref), argnums=(0, 1))(x, w)
+    for a, b in zip(ga, gb, strict=True):
+        assert a.shape == b.shape
+        assert _rel(a.astype(jnp.float32), b) < 1e-2
+    with pytest.raises(ValueError, match="float16/bfloat16"):
+        ragged_matmul_hopper(x.astype(jnp.float32), w.astype(jnp.float32), gs)
+
+
 @pytest.mark.parametrize("sizes", [
     [10, 0, 37, 1, 16],      # empty and single-row groups, unaligned sizes
     [64, 0, 0, 0, 0],        # everything in one group

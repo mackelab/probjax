@@ -760,7 +760,9 @@ def test_xla_kernel_mv_bfloat16_runs_and_keeps_dtype():
 
 def test_xla_kernel_mv_memory_is_bounded_in_fwd_and_bwd():
     """Neither pass may materialize the [N, M] kernel matrix (regression)."""
-    n = m = 4096  # dense [N, M] = 64 MiB >> tiles + GPU gemm workspace (~4 MiB)
+    # Dense [N, M] = 1 GiB >> tiles + the GPU gemm workspace (cuBLAS reserves
+    # 32 MiB on Hopper, ~4 MiB on Ampere).  Only compiled, never run.
+    n = m = 16384
     q = jnp.zeros((1, n, 4))
     v = jnp.zeros((1, m, 2))
     dense_bytes = n * m * 4
@@ -790,9 +792,10 @@ def test_xla_kernel_mv_memory_is_bounded_in_fwd_and_bwd():
     assert fwd < dense_bytes / 8
     assert bwd < dense_bytes / 4
     # Only (q, k, v, params) are saved for the backward pass.
-    _, vjp_fn = jax.vjp(f, q, q, v)
+    qs, vs = q[:, :1024], v[:, :1024]  # this one runs: keep it small
+    _, vjp_fn = jax.vjp(f, qs, qs, vs)
     saved = sum(x.size for x in jax.tree.leaves(vjp_fn) if hasattr(x, "size"))
-    assert saved <= 2 * (q.size + q.size + v.size) + 16
+    assert saved <= 2 * (qs.size + qs.size + vs.size) + 16
 
 
 _requires_accelerator = pytest.mark.skipif(

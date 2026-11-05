@@ -39,6 +39,7 @@ from jax.experimental.pallas import triton as plgpu
 
 from probjax.utils.jaxutils import where
 
+from ..attention_mask_bias import QKVLengthMask
 from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
@@ -55,6 +56,8 @@ from ..kernel_utils.kernel_primitive import (
 )
 from .attention import (
     BlockSizes,
+    _aligned_seq_len,
+    _check_paddable,
     _dropout_mask_counter,
     _extract_fwd_data,
     _flatten_optional_pytree,
@@ -622,6 +625,14 @@ def _xla_mla(
     return xla_attention(q, key, value, **common)
 
 
+def _paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len) -> bool:
+    try:
+        _check_paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len)
+    except ValueError:
+        return False
+    return True
+
+
 def mla(
     q: jax.Array,
     cache: jax.Array,
@@ -705,6 +716,38 @@ def mla(
             dropout_rate=dropout_rate,
             dropout_impl=dropout_impl,
         )
+
+    # The forward kernel tiles Q and the latent sequence with
+    # ``min(block, length)`` and Triton needs power-of-two tiles, so a short
+    # non-power-of-two length (e.g. 48) only lowers in interpret mode.  As in
+    # :func:`mha`, pad unaligned lengths and mask the padded latent rows (padded
+    # query rows are sliced off) whenever the mask and bias allow it.
+    q_len, kv_len = int(q.shape[1]), int(cache.shape[1])
+    q_pad = _aligned_seq_len(q_len, block_sizes.block_q)
+    kv_pad = _aligned_seq_len(kv_len, block_sizes.block_k)
+    if (q_pad, kv_pad) != (q_len, kv_len) and _paddable(
+        mask, bias, dropout_rate, dropout_impl, q_len, kv_len
+    ):
+        length_mask = QKVLengthMask(q_length=q_pad, kv_length=kv_len, block_sparse=False)
+        out = mla(
+            jnp.pad(q, ((0, 0), (0, q_pad - q_len), (0, 0), (0, 0))),
+            jnp.pad(cache, ((0, 0), (0, kv_pad - kv_len), (0, 0))),
+            wk,
+            wv,
+            mask=length_mask if mask is None else mask & length_mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+        return out[:, :q_len]
 
     fn = _make_mla_custom_vjp(
         mask_treedef=mask_treedef,

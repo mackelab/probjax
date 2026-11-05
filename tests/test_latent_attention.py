@@ -46,6 +46,7 @@ from probjax.nn.pallas_kernels.kernels.latent_attention import (
     _materialize_kv,
     mla,
 )
+from tests._tolerance import fp32_tol
 
 
 def _block_sizes(seq: int, mul: int = 16) -> BlockSizes:
@@ -102,7 +103,7 @@ def test_layer_matches_dense_reference(mode):
     logits = jnp.einsum("bqhd,bkhd->bhqk", q, key) / math.sqrt(q.shape[-1])
     attn = jnp.einsum("bhqk,bkhd->bqhd", jax.nn.softmax(logits, -1), value)
     expected = layer._out_from_attention(attn)
-    assert jnp.allclose(out, expected, atol=1e-5)
+    assert jnp.allclose(out, expected, **fp32_tol(atol=1e-5))
 
 
 def test_layer_defaults_to_absorbed_without_kv_projection():
@@ -202,11 +203,11 @@ def test_layer_use_kernel_matches_dense(mode):
     nnx.update(fused, nnx.state(dense))
 
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
-    assert jnp.allclose(dense(x), fused(x), atol=1e-4)
+    assert jnp.allclose(dense(x), fused(x), **fp32_tol(atol=1e-4))
 
     g_dense = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(dense, x)
     g_fused = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(fused, x)
-    assert jnp.allclose(g_dense, g_fused, atol=1e-4)
+    assert jnp.allclose(g_dense, g_fused, **fp32_tol(atol=1e-4))
 
 
 def test_layer_gradients_are_finite():
@@ -239,7 +240,7 @@ def test_kernel_materialized_matches_reference():
 
     out = mla(q, cache, wk, wv, block_sizes=_block_sizes(s), interpret=True)
     expected = _reference(q, cache, wk, wv, heads)
-    assert jnp.allclose(out, expected, atol=1e-5)
+    assert jnp.allclose(out, expected, **fp32_tol(atol=1e-5))
 
 
 def test_kernel_absorbed_matches_reference():
@@ -256,7 +257,7 @@ def test_kernel_absorbed_matches_reference():
         interpret=True,
     )
     expected = _reference(q, cache, None, None, heads)
-    assert jnp.allclose(out, expected, atol=1e-5)
+    assert jnp.allclose(out, expected, **fp32_tol(atol=1e-5))
 
 
 def test_kernel_rejects_mixed_projections():
@@ -293,7 +294,7 @@ def test_kernel_gradients_match_reference():
     grads = jax.grad(run, argnums=(0, 1, 2, 3))(q, cache, wk, wv)
     expected = jax.grad(ref, argnums=(0, 1, 2, 3))(q, cache, wk, wv)
     for got, want in zip(grads, expected, strict=True):
-        assert jnp.allclose(got, want, atol=1e-4)
+        assert jnp.allclose(got, want, **fp32_tol(atol=1e-4))
 
 
 def test_kernel_respects_causal_mask():
@@ -323,7 +324,7 @@ def test_kernel_respects_causal_mask():
         jax.nn.softmax(jnp.where(causal, logits, -1e15), -1),
         value,
     )
-    assert jnp.allclose(out, expected, atol=1e-5)
+    assert jnp.allclose(out, expected, **fp32_tol(atol=1e-5))
 
 
 def test_kernel_rejects_absorbed_with_mismatched_head_dim():
@@ -380,7 +381,7 @@ def _assert_matches_mha(mask=None, bias=None):
         block_sizes=block_sizes,
         interpret=True,
     )
-    assert jnp.allclose(got, want, atol=1e-5), float(jnp.abs(got - want).max())
+    assert jnp.allclose(got, want, **fp32_tol(atol=1e-5)), float(jnp.abs(got - want).max())
 
 
 # Every mask ``mha`` supports.  Constructed at module scope so a signature
@@ -475,7 +476,7 @@ def test_kernel_absorbed_masks_match_mha():
             block_sizes=block_sizes,
             interpret=True,
         )
-        assert jnp.allclose(got, want, atol=1e-5)
+        assert jnp.allclose(got, want, **fp32_tol(atol=1e-5))
 
 
 def test_kernel_dropout_forward_runs():
@@ -538,7 +539,7 @@ def test_kernel_dropout_gradients_match_mha(dropout_impl):
     got = jax.grad(via_mla)(q)
     want = jax.grad(via_mha)(q)
     assert jnp.isfinite(got).all()
-    assert jnp.allclose(got, want, atol=1e-5)
+    assert jnp.allclose(got, want, **fp32_tol(atol=1e-5))
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +723,7 @@ def test_layer_kernel_accepts_bias_like_flex():
     nnx.update(fused, nnx.state(dense))
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
     bias = DenseBias(jax.random.normal(jax.random.key(2), (2, 4, 32, 32)))
-    assert jnp.allclose(dense(x, bias=bias), fused(x, bias=bias), atol=1e-4)
+    assert jnp.allclose(dense(x, bias=bias), fused(x, bias=bias), **fp32_tol(atol=1e-4))
 
 
 def test_layer_kv_len_is_accepted_without_query_scale():
@@ -733,7 +734,7 @@ def test_layer_kv_len_is_accepted_without_query_scale():
     """
     layer = _layer(use_kernel=True, block_sizes=_block_sizes(32))
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
-    assert jnp.allclose(layer(x, kv_len=32), layer(x), atol=1e-6)
+    assert jnp.allclose(layer(x, kv_len=32), layer(x), **fp32_tol(atol=1e-6))
 
 
 # ---------------------------------------------------------------------------
@@ -792,8 +793,8 @@ def test_layer_shared_bank_matches_encoding_layer():
     x = jax.random.normal(jax.random.key(1), (2, 5, 32))
     latent = encoder.encode_latent(x)
     out = consumer(x, latent)
-    assert jnp.allclose(out, _absorbed_reference(encoder, x), atol=1e-5)
-    assert jnp.allclose(out, encoder(x), atol=1e-5)
+    assert jnp.allclose(out, _absorbed_reference(encoder, x), **fp32_tol(atol=1e-5))
+    assert jnp.allclose(out, encoder(x), **fp32_tol(atol=1e-5))
 
 
 def test_layer_consumer_rejects_wrong_bank_width():
@@ -849,11 +850,11 @@ def test_layer_folded_heads_match_unfolded(use_kernel):
     )
     nnx.update(unfolded, nnx.state(folded))
     x = jax.random.normal(jax.random.key(1), (2, 32, 32))
-    assert jnp.allclose(folded(x), unfolded(x), atol=1e-5)
+    assert jnp.allclose(folded(x), unfolded(x), **fp32_tol(atol=1e-5))
 
     g_fold = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(folded, x)
     g_unfold = nnx.grad(lambda m, z: m(z).sum(), argnums=1)(unfolded, x)
-    assert jnp.allclose(g_fold, g_unfold, atol=1e-5)
+    assert jnp.allclose(g_fold, g_unfold, **fp32_tol(atol=1e-5))
 
 
 def test_layer_folded_heads_pack_roundtrip():
@@ -887,7 +888,7 @@ def test_layer_folded_heads_falls_back_with_query_dependent_mask():
     nnx.update(unfolded, nnx.state(folded))
     x = jax.random.normal(jax.random.key(1), (2, 5, 32))
     mask = CausalMask()
-    assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), atol=1e-5)
+    assert jnp.allclose(folded(x, mask=mask), unfolded(x, mask=mask), **fp32_tol(atol=1e-5))
 
 
 @pytest.mark.parametrize("use_kernel", [False, True])
@@ -942,13 +943,13 @@ def test_layer_folds_with_query_independent_mask(use_kernel, monkeypatch):
     out_unfold = unfolded(x, mask=mask)
     assert calls["n"] == 0
 
-    assert jnp.allclose(out_fold, out_unfold, atol=1e-4)
+    assert jnp.allclose(out_fold, out_unfold, **fp32_tol(atol=1e-4))
 
     g_fold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(folded, x)
     g_unfold = nnx.grad(lambda m, z: (m(z, mask=mask) ** 2).sum(), argnums=1)(
         unfolded, x
     )
-    assert jnp.allclose(g_fold, g_unfold, atol=1e-4)
+    assert jnp.allclose(g_fold, g_unfold, **fp32_tol(atol=1e-4))
 
 
 def test_layer_query_dependent_mask_does_not_fold(monkeypatch):
@@ -1015,7 +1016,7 @@ def test_layer_folded_kernel_handles_non_tiling_query_length(seq):
     x = jax.random.normal(jax.random.key(1), (2, seq, 32))
     out = folded(x)  # must not raise
     assert out.shape == x.shape
-    assert jnp.allclose(out, unfolded(x), atol=1e-4)
+    assert jnp.allclose(out, unfolded(x), **fp32_tol(atol=1e-4))
 
 
 # ---------------------------------------------------------------------------
@@ -1042,7 +1043,7 @@ def test_layer_without_value_projection_matches_reference():
     logits = jnp.einsum("bqhd,bkhd->bhqk", q, kv) / math.sqrt(16)
     attn = jnp.einsum("bhqk,bkhd->bqhd", jax.nn.softmax(logits, -1), kv)
     expected = layer.out(attn.reshape(2, 5, 4 * 16))
-    assert jnp.allclose(out, expected, atol=1e-5)
+    assert jnp.allclose(out, expected, **fp32_tol(atol=1e-5))
 
 
 def test_layer_without_value_projection_has_fewer_params():
@@ -1107,7 +1108,7 @@ def test_layer_qassmax_is_identity_at_init():
     nnx.update(scaled, nnx.state(plain))
     x = jax.random.normal(jax.random.key(1), (2, 5, 32))
     # Zero-init base/gate: scaling must be exactly identity at init.
-    assert jnp.allclose(plain(x), scaled(x, kv_len=5), atol=1e-6)
+    assert jnp.allclose(plain(x), scaled(x, kv_len=5), **fp32_tol(atol=1e-6))
 
 
 def test_layer_qassmax_changes_output_when_scales_move():
