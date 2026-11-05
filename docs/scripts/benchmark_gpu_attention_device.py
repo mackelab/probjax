@@ -6,7 +6,10 @@ implementation, all bf16, with the KV-length mask the model uses
 the current default (flex_attention, triton_split, 64x64 tiles).
 
     python -m docs.scripts.benchmark_gpu_attention_device --out results.jsonl \
-        --shapes mla isab smallq generic --impls flex:default flex:triton_generic cudnn mosaic_fa3
+        --shapes mla isab smallq generic --impls flex:default cudnn flex:triton torch:flex
+
+torch:* rows need PyTorch; run them in a process with XLA_PYTHON_CLIENT_PREALLOCATE=false
+(JAX otherwise reserves most of the GPU).
 """
 
 from __future__ import annotations
@@ -96,6 +99,9 @@ def _impls(names):
 
     out = {}
     for n in names:
+        if n.startswith("torch:"):
+            out[n] = None
+            continue
         if n == "cudnn":
             out[n] = cudnn
         elif n == "mosaic_fa3":
@@ -111,6 +117,10 @@ def _impls(names):
                 from probjax.nn.pallas_kernels.kernels.flash_attention3 import mha_flash
                 return lambda q, k, v, lens: mha_flash(q, k, v, **kw)
             out[n] = mk()
+        elif n in ("flex:mosaic", "flex:cudnn", "flex:triton"):
+            out[n] = (lambda impl: lambda q, k, v, lens: flex_attention(
+                q, k, v, mask=None if lens is None else KVLenMask(lens), enable_gqa=True,
+                implementation=impl))(n.split(":")[1])
         elif n == "flex:triton_generic":
             out[n] = lambda q, k, v, lens: flex_attention(
                 q, k, v, mask=None if lens is None else KVLenMask(lens), implementation="triton")
@@ -133,6 +143,88 @@ def _impls(names):
         else:
             raise ValueError(n)
     return out
+
+
+# ---------------- torch ----------------
+_TORCH_FLEX = None
+
+
+def _torch_case(impl, q, k, v, do, lens, reps):
+    """Time a torch implementation on the same data; returns (fwd_ms, fwd_bwd_ms, out, grads)."""
+    import numpy as np
+    import torch
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    global _TORCH_FLEX
+    dev = "cuda"
+    tt = lambda x: torch.from_numpy(np.asarray(x.astype(jnp.float32))).to(dev, torch.bfloat16)
+    # torch layout [B, H, T, D]
+    tq, tk, tv = (tt(x).transpose(1, 2).contiguous().requires_grad_(True) for x in (q, k, v))
+    tdo = tt(do).transpose(1, 2).contiguous()
+    B, H, Lq, D = tq.shape
+    Hkv, Lkv = tk.shape[1], tk.shape[2]
+    gqa = H != Hkv
+    if impl == "torch:flex":
+        from torch.nn.attention.flex_attention import create_block_mask, flex_attention
+        if _TORCH_FLEX is None:
+            # One compiled entry per (shape, mask, grad mode): the default limit
+            # of 8 made later shapes fall back to eager flex_attention (dense
+            # scores, 10-100x slower or OOM).
+            import torch._dynamo
+            torch._dynamo.config.cache_size_limit = 1024
+            torch._dynamo.config.accumulated_cache_size_limit = 4096
+            _TORCH_FLEX = torch.compile(flex_attention, dynamic=False)
+        if lens is not None:
+            tl = torch.from_numpy(np.asarray(lens)).to(dev)
+            bm = create_block_mask(lambda b, h, qi, ki: ki < tl[b], B, None, Lq, Lkv, device=dev)
+        else:
+            bm = None
+        f = lambda: _TORCH_FLEX(tq, tk, tv, block_mask=bm, enable_gqa=gqa)
+    else:
+        backend = {"torch:flash": SDPBackend.FLASH_ATTENTION,
+                   "torch:efficient": SDPBackend.EFFICIENT_ATTENTION}[impl]
+        mask = None
+        if lens is not None:
+            if impl == "torch:flash":
+                raise RuntimeError("SDPA flash takes no attention mask")
+            tl = torch.from_numpy(np.asarray(lens)).to(dev)
+            mask = (torch.arange(Lkv, device=dev)[None, None, None, :] < tl[:, None, None, None])
+            mask = mask.expand(B, 1, Lq, Lkv)
+        def f():
+            with sdpa_kernel(backend):
+                return torch.nn.functional.scaled_dot_product_attention(
+                    tq, tk, tv, attn_mask=mask, enable_gqa=gqa)
+
+    def fwd():
+        with torch.no_grad():
+            return f()
+
+    def fwd_bwd():
+        for t in (tq, tk, tv):
+            t.grad = None
+        out = f()
+        out.backward(tdo)
+        return out
+
+    def timed(fn):
+        fn(); fn(); torch.cuda.synchronize()
+        ts = []
+        for _ in range(reps):
+            t0 = time.perf_counter(); fn(); torch.cuda.synchronize()
+            ts.append((time.perf_counter() - t0) * 1e3)
+        return statistics.median(ts)
+
+    try:
+        fwd_ms = timed(fwd)
+        fb_ms = timed(fwd_bwd)
+        out = fwd_bwd()
+        back = lambda t: jnp.asarray(t.detach().float().transpose(1, 2).cpu().numpy())
+        res = (fwd_ms, fb_ms, back(out), tuple(back(t.grad) for t in (tq, tk, tv)))
+    finally:
+        # Return torch's cached blocks so the next JAX reference has the memory.
+        del tq, tk, tv, tdo
+        torch.cuda.empty_cache()
+    return res
 
 
 def _time(fn, args, reps):
@@ -188,6 +280,19 @@ def main():
         ref_g = fwd_bwd(ref_impl)(q, k, v)
         for iname, f in impls.items():
             rec = dict(meta, shape=sname, B=B, Lq=Lq, Lkv=Lkv, H=H, D=D, masked=masked, impl=iname)
+            if iname.startswith("torch:"):
+                try:
+                    fm, fbm, o, g = _torch_case(iname, q, k, v, do, lens, args.reps)
+                    rec.update(fwd_ms=round(fm, 3), fwd_bwd_ms=round(fbm, 3), status="ok",
+                               out_err=float(jnp.max(jnp.abs(o - ref_out.astype(jnp.float32)))),
+                               grad_err=[float(jnp.max(jnp.abs(a - b.astype(jnp.float32))))
+                                         for a, b in zip(g, ref_g)])
+                except Exception as exc:  # noqa: BLE001
+                    rec.update(status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
+                print(json.dumps(rec), flush=True)
+                with open(args.out, "a") as fh:
+                    fh.write(json.dumps(rec) + "\n")
+                continue
             try:
                 if iname.startswith("mosaic") and masked:
                     rec["note"] = "unmasked (no mask support)"
