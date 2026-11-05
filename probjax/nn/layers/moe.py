@@ -23,6 +23,7 @@ from probjax.nn.layers.grouped_matmul import (
     ragged_matmul_hopper,
     scatter_to_layout,
 )
+from probjax.nn.pallas_kernels.kernels.grouped_matmul import mosaic_supports_dtype
 from probjax.nn.sharding import (
     BATCH,
     EMBED,
@@ -260,7 +261,8 @@ class ExpertSwiGLU(nnx.Module):
         w_gate, w_up, w_down = self._replicated_kernels()
         cdt = self.dtype if self.dtype is not None else x.dtype
         if backend is None:
-            backend = grouped_backend()
+            # Mosaic's wgmma kernels are 16-bit only; Triton runs on Hopper too.
+            backend = grouped_backend() if mosaic_supports_dtype(cdt) else "triton"
         if backend not in ("mosaic", "triton"):
             raise ValueError(
                 f"backend must be 'mosaic', 'triton' or None, got {backend!r}"
