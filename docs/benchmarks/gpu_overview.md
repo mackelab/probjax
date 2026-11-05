@@ -5,7 +5,7 @@ How probjax's kernels and models compare with the alternatives in JAX and PyTorc
 - [Attention](gpu_attention.md): `dot_product_attention`, `flex_attention` and `mha` against `jax.nn` (XLA, cuDNN) and PyTorch SDPA; memory, short sequences, GQA and split-KV decoding, CPU.
 - [Sequence mixers, kernel sums and MoE](gpu_kernels.md): SSD, Mamba scan, residual linear attention, Gated DeltaNet, `rbf_kernel_mv` / KDE, `kernel_logsumexp` / Sinkhorn / OT, MoE grouped matmul.
 - [Models](gpu_nn.md): `Transformer` / `DiffusionTransformer` per `attention_fn`, `scan_layers` and `remat_policy`, `SSMModel` cells, `UNet`, `MoELayer`.
-- [H100 (Hopper)](gpu_h100.md): the same suites on an H100, H100 vs RTX 3090, and the device-specific attention defaults for sm_90 (cuDNN routing, backward choice, Mosaic `mha_flash`).
+- [H100 (Hopper)](gpu_h100.md): the same suites on an H100, H100 vs RTX 3090, the device-specific attention defaults for sm_90 (cuDNN routing, backward choice, Mosaic `mha_flash`), MoE dispatch on H100, and PyTorch (`flex_attention`, SDPA) on H100.
 
 **Devices.** These pages measure an RTX 3090 (sm_86) unless they say otherwise; the H100 results are on [their own page](gpu_h100.md). Defaults can differ per device: on sm_90 `flex_attention` / `dot_product_attention` route large bf16 calls to cuDNN and resolve `backward_pass_impl="auto"` differently ([rules](gpu_h100.md#device-specific-defaults)).
 

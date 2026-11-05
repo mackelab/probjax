@@ -101,6 +101,18 @@ Kernel and model suites, RTX 3090 time divided by H100 time for every row both G
 | ssm | 20 | 2.45× | 1.01–3.33× |
 | unet | 8 | 2.94× | 1.21–5.59× |
 
+## MoE dispatch on H100
+
+`MoELayer` with dropless routing, bf16, the shape of a large decoder MoE (d_model 512, 64 experts, top-8, expert width 128, shared expert 1024); train step = forward + gradients w.r.t. parameters and input, ms ([`gpu_moe_h100.json`](gpu_moe_h100.json), `docs/scripts/benchmark_gpu_moe_dispatch.py`):
+
+| tokens | `triton` / `sorted` | `triton` / `gather` | `triton` / `fused` | `triton` / `fused_gsum` | `mosaic` / `sorted` | `ragged_dot` / `sorted` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 16,384 | 4.83 | 3.68 | 3.31 | 2.89 | **2.67** | 148 |
+| 131,072 | 28.5 | 30.6 | 26.5 | 22.2 | **19.2** | OOM |
+| 1,048,576 | 268 | 248 | 227 | 188 | **151** | fail† |
+
+† XLA autotuning found no configuration (`NOT_FOUND`). `"mosaic"` runs jax's Hopper ragged-dot kernels (`ragged_dot_mgpu` forward, `transposed_ragged_dot_mgpu` for the weight gradient; wgmma + TMA) on the sorted dispatch; `"pallas"` resolves to it on sm_90 and measures the same. It is 8% (16k tokens), 14% (131k) and 20% (1M) faster per train step than the fastest Triton dispatch (`fused_gsum`); the forward alone is within 3–8% of `fused_gsum` (52.5 vs 56.3 ms at 1M tokens), the gain is in the backward. Outputs and gradients agree with `triton` / `sorted` to bf16 precision (max relative difference <= 1.1%). The sorted dispatch keeps top-k copies of each token (N·K × D buffers), so it needs more activation memory than `fused_gsum`.
+
 ## Against PyTorch
 
 PyTorch 2.14.1 (CUDA 13), same inputs and cotangents as the probjax rows; every torch result is checked against the probjax reference (gradients agree to bf16 precision, max |difference| <= 0.06). `torch.nn.attention.flex_attention` is compiled (`torch.compile`, one compiled entry per shape) with a `create_block_mask` built from the KV lengths; SDPA is pinned to one backend with `sdpa_kernel`. SDPA flash takes no attention mask, so it cannot run the masked cases; the memory-efficient backend takes them only as a dense boolean mask. fwd+bwd, ms ([`gpu_attention_h100_device.json`](gpu_attention_h100_device.json), labels `h100_torch_*`):
