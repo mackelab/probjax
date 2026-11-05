@@ -1,0 +1,524 @@
+{
+  "device": {
+    "jax": "0.11.2",
+    "backend": "gpu",
+    "devices": [
+      "cuda:0"
+    ],
+    "python": "3.14.8",
+    "device_kind": "NVIDIA GeForce RTX 3090",
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "driver": "615.78.08",
+    "gpu_memory_gb": 24.0,
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0"
+  },
+  "config": {
+    "device": "gpu",
+    "suite": "residuals",
+    "output": "docs/benchmarks/kernel_attn_gpu_residuals.json",
+    "append": false,
+    "tag": null,
+    "batch": 2,
+    "heads": 8,
+    "head_dims": [
+      64
+    ],
+    "seq_lens": [
+      1000,
+      2048
+    ],
+    "dtypes": [
+      "bfloat16",
+      "float32"
+    ],
+    "modes": [
+      "fwd",
+      "fwd_bwd"
+    ],
+    "causal": [
+      0
+    ],
+    "impls": [
+      "probjax_default",
+      "probjax_flax",
+      "probjax_flex",
+      "probjax_mha",
+      "jax_xla",
+      "jax_cudnn"
+    ],
+    "find_max": false,
+    "max_seq": 262144,
+    "child": null
+  },
+  "results": [
+    {
+      "suite": "residuals",
+      "impl": "probjax_default",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 8.062517166137695,
+      "residual_non_input_mb": 8.062517166137695,
+      "residual_shapes": [
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flax",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 97.53418350219727,
+      "residual_non_input_mb": 97.53418350219727,
+      "residual_shapes": [
+        "bfloat16[2, 1000, 8, 64]",
+        "bfloat16[2, 1000, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1]",
+        "bfloat16[1, 2, 8, 1000, 1000]",
+        "bfloat16[2, 1000, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flex",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 8.062517166137695,
+      "residual_non_input_mb": 8.062517166137695,
+      "residual_shapes": [
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_mha",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 8.062517166137695,
+      "residual_non_input_mb": 8.062517166137695,
+      "residual_shapes": [
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "bfloat16[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_xla",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 97.53418350219727,
+      "residual_non_input_mb": 97.53418350219727,
+      "residual_shapes": [
+        "bfloat16[2, 1000, 8, 64]",
+        "bfloat16[2, 1000, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1]",
+        "bfloat16[1, 2, 8, 1000, 1000]",
+        "bfloat16[2, 1000, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_cudnn",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 7.87353515625,
+      "residual_non_input_mb": 7.87353515625,
+      "residual_shapes": [
+        "bfloat16[2, 1000, 8, 64]",
+        "bfloat16[2, 1000, 8, 64]",
+        "bfloat16[2, 1000, 8, 64]",
+        "bfloat16[0]",
+        "float32[2, 8, 1000]",
+        "bfloat16[2, 1000, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_default",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.125011444091797,
+      "residual_non_input_mb": 4.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flax",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 396.25000381469727,
+      "residual_non_input_mb": 396.25000381469727,
+      "residual_shapes": [
+        "bfloat16[2, 2048, 8, 64]",
+        "bfloat16[2, 2048, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 1]",
+        "bfloat16[1, 2, 8, 2048, 2048]",
+        "bfloat16[2, 2048, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flex",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.125011444091797,
+      "residual_non_input_mb": 4.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_mha",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.125011444091797,
+      "residual_non_input_mb": 4.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "bfloat16[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_xla",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 396.25000381469727,
+      "residual_non_input_mb": 396.25000381469727,
+      "residual_shapes": [
+        "bfloat16[2, 2048, 8, 64]",
+        "bfloat16[2, 2048, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 1]",
+        "bfloat16[1, 2, 8, 2048, 2048]",
+        "bfloat16[2, 2048, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_cudnn",
+      "dtype": "bfloat16",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.125,
+      "residual_non_input_mb": 16.125,
+      "residual_shapes": [
+        "bfloat16[2, 2048, 8, 64]",
+        "bfloat16[2, 2048, 8, 64]",
+        "bfloat16[2, 2048, 8, 64]",
+        "bfloat16[0]",
+        "float32[2, 8, 2048]",
+        "bfloat16[2, 2048, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_default",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.062522888183594,
+      "residual_non_input_mb": 16.062522888183594,
+      "residual_shapes": [
+        "float32[]",
+        "float32[]",
+        "float32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flax",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 133.91113662719727,
+      "residual_non_input_mb": 133.91113662719727,
+      "residual_shapes": [
+        "float32[2, 1000, 8, 64]",
+        "float32[2, 1000, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[2, 1000, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flex",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.062522888183594,
+      "residual_non_input_mb": 16.062522888183594,
+      "residual_shapes": [
+        "float32[]",
+        "float32[]",
+        "float32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_mha",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 16.062522888183594,
+      "residual_non_input_mb": 16.062522888183594,
+      "residual_shapes": [
+        "float32[]",
+        "float32[]",
+        "float32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 1024, 8, 64]",
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 1024, 8, 64]",
+        "float32[2, 8, 1024]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_xla",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 1000,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 133.91113662719727,
+      "residual_non_input_mb": 133.91113662719727,
+      "residual_shapes": [
+        "float32[2, 1000, 8, 64]",
+        "float32[2, 1000, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1]",
+        "float32[1, 2, 8, 1000, 1000]",
+        "float32[2, 1000, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_default",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 32.1250114440918,
+      "residual_non_input_mb": 8.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flax",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 536.2500038146973,
+      "residual_non_input_mb": 536.2500038146973,
+      "residual_shapes": [
+        "float32[2, 2048, 8, 64]",
+        "float32[2, 2048, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[2, 2048, 8, 64]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_flex",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 32.1250114440918,
+      "residual_non_input_mb": 8.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "probjax_mha",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 32.1250114440918,
+      "residual_non_input_mb": 8.125011444091797,
+      "residual_shapes": [
+        "key<fry>[]",
+        "uint32[]",
+        "float32[2, 2048, 8, 64]",
+        "float32[2, 8, 2048]"
+      ],
+      "tag": null
+    },
+    {
+      "suite": "residuals",
+      "impl": "jax_xla",
+      "dtype": "float32",
+      "head_dim": 64,
+      "seq": 2048,
+      "batch": 2,
+      "heads": 8,
+      "residual_mb": 536.2500038146973,
+      "residual_non_input_mb": 536.2500038146973,
+      "residual_shapes": [
+        "float32[2, 2048, 8, 64]",
+        "float32[2, 2048, 8, 1, 64]",
+        "float32[]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 1]",
+        "float32[1, 2, 8, 2048, 2048]",
+        "float32[2, 2048, 8, 64]"
+      ],
+      "tag": null
+    }
+  ]
+}

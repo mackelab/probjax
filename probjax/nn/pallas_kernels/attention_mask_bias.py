@@ -1552,7 +1552,9 @@ class SameSegmentMask(AttentionMask):
         # Prefer explicitly provided seg_q/seg_k at call time; else fallback to stored ids.
         s_q = seg_q if seg_q is not None else self.query_segment_ids
         if self.key_segment_ids is None:
-            s_k = s_q
+            # Keys share the query ids; the kernels pass the key-side window of
+            # those ids as ``seg_k`` (needed when the q and k tiles differ).
+            s_k = seg_k if seg_k is not None else s_q
         else:
             s_k = seg_k if seg_k is not None else self.key_segment_ids
         if s_q is None or s_k is None:

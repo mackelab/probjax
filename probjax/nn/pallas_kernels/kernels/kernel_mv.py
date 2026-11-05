@@ -300,35 +300,19 @@ def _kernel_mv_forward(
 
 
 @functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6, 7, 8, 9))
-def kernel_mv(
+def _kernel_mv_pallas(
     q: Array,
     k: Array,
     v: Array,
     params: Array,
     kernel_fn: KernelFn,
     kernel_vjp_fn: KernelVjpFn,
-    block_q: int = 64,
-    block_k: int = 64,
-    block_o: int = 64,
-    interpret: bool = False,
+    block_q: int,
+    block_k: int,
+    block_o: int,
+    interpret: bool,
 ) -> Array:
-    """Pallas kernel matrix-vector product with custom reverse-mode autodiff.
-
-    Args:
-        q: Query array [B, N, D].
-        k: Key array [B, M, D].
-        v: Value array [B, M, O].
-        params: Arbitrary-rank kernel parameters.
-        kernel_fn: Callable kernel block function.
-        kernel_vjp_fn: Callable VJP block function for kernel_fn.
-        block_q: Query tile size.
-        block_k: Key/value tile size.
-        block_o: Output tile size.
-        interpret: Force Pallas interpret mode.
-
-    Returns:
-        Output y = K(q, k) @ v with shape [B, N, O].
-    """
+    """Pallas tiled path of :func:`kernel_mv` (custom reverse-mode autodiff)."""
     return _kernel_mv_forward(
         q,
         k,
@@ -468,7 +452,231 @@ def _kernel_mv_bwd(
     return dq, dk, dv, dparams
 
 
-kernel_mv.defvjp(_kernel_mv_fwd, _kernel_mv_bwd)
+_kernel_mv_pallas.defvjp(_kernel_mv_fwd, _kernel_mv_bwd)
+
+
+# ---------------------------------------------------------------------------
+# Blocked XLA path (default on CPU).
+#
+# Queries are processed in row blocks so only a [B, block_rows, M] kernel tile is
+# alive at a time; the backward recomputes the tiles instead of storing K, so the
+# custom_vjp residuals are just (q, k, v, params): O((N + M) * D + M * O) memory.
+# ---------------------------------------------------------------------------
+
+#: Element budget of one materialized kernel tile ``[B, block_rows, M]``.
+_XLA_TILE_ELEMENTS = 1 << 22
+
+
+def _xla_block_rows(bsz: int, n: int, m: int, tile_elements: int | None) -> int:
+    budget = _XLA_TILE_ELEMENTS if tile_elements is None else int(tile_elements)
+    rows = max(budget // max(bsz * m, 1), 1)
+    if rows >= n:
+        return n
+    rows = max(8, rows - rows % 8)
+    num_blocks = -(-n // rows)
+    # Balance the blocks so padding stays below 8 rows per block.
+    rows = -(-n // num_blocks)
+    return -(-rows // 8) * 8
+
+
+def _split_rows(x: Array, block_rows: int) -> Array:
+    """[B, N, F] -> [num_blocks, B, block_rows, F] (zero padded)."""
+    bsz, n, f = x.shape
+    x = pad_to_multiple(x, 1, block_rows)
+    num_blocks = x.shape[1] // block_rows
+    return jnp.swapaxes(x.reshape(bsz, num_blocks, block_rows, f), 0, 1)
+
+
+def _merge_rows(x: Array, n: int) -> Array:
+    """[num_blocks, B, block_rows, F] -> [B, N, F]."""
+    num_blocks, bsz, block_rows, f = x.shape
+    return jnp.swapaxes(x, 0, 1).reshape(bsz, num_blocks * block_rows, f)[:, :n]
+
+
+def _batched_kernel(kernel_fn: KernelFn, q: Array, k: Array, params: Array) -> Array:
+    return jax.vmap(lambda qb, kb: kernel_fn(qb, kb, params))(q, k)
+
+
+def _kernel_mv_xla_forward(q, k, v, params, kernel_fn, block_rows):
+    dtype = jnp.result_type(q.dtype, k.dtype, v.dtype)
+    q, k, v = q.astype(dtype), k.astype(dtype), v.astype(dtype)
+    n = q.shape[1]
+
+    def block(q_blk):
+        w = _batched_kernel(kernel_fn, q_blk, k, params).astype(dtype)
+        out = jnp.einsum("bnm,bmo->bno", w, v, preferred_element_type=jnp.float32)
+        return out.astype(dtype)
+
+    if block_rows >= n:
+        return block(q)
+    return _merge_rows(lax.map(block, _split_rows(q, block_rows)), n)
+
+
+@functools.partial(jax.custom_vjp, nondiff_argnums=(4, 5, 6))
+def _kernel_mv_xla(q, k, v, params, kernel_fn, kernel_vjp_fn, block_rows):
+    del kernel_vjp_fn
+    return _kernel_mv_xla_forward(q, k, v, params, kernel_fn, block_rows)
+
+
+def _kernel_mv_xla_fwd(q, k, v, params, kernel_fn, kernel_vjp_fn, block_rows):
+    del kernel_vjp_fn
+    out = _kernel_mv_xla_forward(q, k, v, params, kernel_fn, block_rows)
+    return out, (q, k, v, params)
+
+
+def _kernel_mv_xla_bwd(kernel_fn, kernel_vjp_fn, block_rows, res, dy):
+    q, k, v, params = res
+    dtype = jnp.result_type(q.dtype, k.dtype, v.dtype)
+    qc, kc, vc = q.astype(dtype), k.astype(dtype), v.astype(dtype)
+    dy = jnp.asarray(dy).astype(dtype)
+    bsz, n, _ = q.shape
+    m = k.shape[1]
+    f32 = jnp.float32
+    batched_vjp = jax.vmap(kernel_vjp_fn, in_axes=(0, 0, None, 0))
+
+    def block(carry, xs):
+        dk_acc, dv_acc, dp_acc = carry
+        q_blk, dy_blk = xs
+        w = _batched_kernel(kernel_fn, q_blk, kc, params).astype(dtype)
+        dv_acc = dv_acc + jnp.einsum(
+            "bnm,bno->bmo", w, dy_blk, preferred_element_type=f32
+        )
+        coeff = jnp.einsum("bno,bmo->bnm", dy_blk, vc, preferred_element_type=f32)
+        dq_blk, dk_blk, dp_blk = batched_vjp(q_blk, kc, params, coeff.astype(dtype))
+        dk_acc = dk_acc + dk_blk.astype(f32)
+        dp_acc = dp_acc + jnp.sum(dp_blk.astype(f32), axis=0).reshape(dp_acc.shape)
+        return (dk_acc, dv_acc, dp_acc), dq_blk.astype(q.dtype)
+
+    init = (
+        jnp.zeros((bsz, m, k.shape[2]), f32),
+        jnp.zeros((bsz, m, v.shape[2]), f32),
+        jnp.zeros(params.shape, f32),
+    )
+    if block_rows >= n:
+        (dk, dv, dp), dq = block(init, (qc, dy))
+    else:
+        (dk, dv, dp), dq_blocks = lax.scan(
+            block, init, (_split_rows(qc, block_rows), _split_rows(dy, block_rows))
+        )
+        dq = _merge_rows(dq_blocks, n)
+    return (
+        dq.astype(q.dtype),
+        dk.astype(k.dtype),
+        dv.astype(v.dtype),
+        dp.astype(params.dtype),
+    )
+
+
+_kernel_mv_xla.defvjp(_kernel_mv_xla_fwd, _kernel_mv_xla_bwd)
+
+
+_IMPLEMENTATIONS = ("xla", "pallas")
+
+
+def _resolve_implementation(implementation: str | None, interpret: bool) -> str:
+    if implementation is not None:
+        if implementation not in _IMPLEMENTATIONS:
+            raise ValueError(
+                f"implementation must be one of {_IMPLEMENTATIONS} or None, "
+                f"got {implementation!r}."
+            )
+        return implementation
+    if interpret:
+        return "pallas"
+    return "xla" if jax.default_backend() == "cpu" else "pallas"
+
+
+def kernel_mv(
+    q: Array,
+    k: Array,
+    v: Array,
+    params: Array,
+    kernel_fn: KernelFn,
+    kernel_vjp_fn: KernelVjpFn,
+    block_q: int = 64,
+    block_k: int = 64,
+    block_o: int = 64,
+    interpret: bool = False,
+    *,
+    implementation: str | None = None,
+    xla_tile_elements: int | None = None,
+) -> Array:
+    """Kernel matrix-vector product ``y = K(q, k) @ v`` with custom autodiff.
+
+    Never materializes the full ``[N, M]`` kernel matrix, in the forward or the
+    backward pass: the backward recomputes kernel tiles, so the memory held for
+    reverse mode is only ``(q, k, v, params)``.
+
+    Args:
+        q: Query array [B, N, D].
+        k: Key array [B, M, D].
+        v: Value array [B, M, O].
+        params: Arbitrary-rank kernel parameters.
+        kernel_fn: Callable kernel block function ``([n, D], [m, D], params) -> [n, m]``.
+        kernel_vjp_fn: VJP of ``kernel_fn``:
+            ``(q_blk, k_blk, params, ct[n, m]) -> (dq_blk, dk_blk, dparams)``.
+        block_q: Query tile size (Pallas path, power of two).
+        block_k: Key/value tile size (Pallas path, power of two).
+        block_o: Output tile size (Pallas path); rounded to a power of two >= 8
+            and capped at the padded output width.
+        interpret: Force the Pallas path in interpret mode (debugging).
+        implementation: ``"pallas"`` (tiled Pallas kernel), ``"xla"`` (row-blocked
+            XLA: ``lax.map``/``lax.scan`` over query blocks with a dense
+            ``[B, rows, M]`` tile inside) or ``None`` to choose automatically:
+            ``"xla"`` on CPU, ``"pallas"`` elsewhere, ``"pallas"`` whenever
+            ``interpret=True``.
+        xla_tile_elements: Element budget of one kernel tile on the XLA path
+            (default ``2**22``); smaller values lower peak memory.
+
+    Note:
+        On GPU the Pallas path zero-pads the feature dim ``D`` to a power of two
+        >= 8 (a Triton requirement), so ``kernel_fn`` must be invariant to
+        appended zero feature columns -- true for kernels of inner products or
+        Euclidean distances such as the RBF. Use ``implementation="xla"`` for
+        kernels where that does not hold (e.g. per-dimension parameters with a
+        ``D`` that is not a power of two >= 8).
+
+    Returns:
+        Output y = K(q, k) @ v with shape [B, N, O].
+    """
+    q = jnp.asarray(q)
+    k = jnp.asarray(k)
+    v = jnp.asarray(v)
+    params = jnp.asarray(params)
+    _validate_inputs(q, k, v)
+    impl = _resolve_implementation(implementation, interpret)
+    if impl == "xla":
+        block_rows = _xla_block_rows(
+            q.shape[0], q.shape[1], k.shape[1], xla_tile_elements
+        )
+        return _kernel_mv_xla(q, k, v, params, kernel_fn, kernel_vjp_fn, block_rows)
+    use_interpret = _resolve_interpret_mode(interpret)
+    if use_interpret:
+        return _kernel_mv_pallas(
+            q, k, v, params, kernel_fn, kernel_vjp_fn, block_q, block_k, block_o, True
+        )
+    # Triton needs power-of-two operand shapes and silently miscomputes dots whose
+    # contraction dim is < 8 (D in {1, 2, 4} or block_o == 1 gave wrong results).
+    # Zero-pad the feature and output dims outside the custom_vjp so autodiff
+    # slices the gradients back.
+    d, o = q.shape[2], v.shape[2]
+    d_pad = _pallas_dim(d)
+    block_o = min(_pallas_dim(block_o), _pallas_dim(o))
+    if d_pad != d:
+        q = jnp.pad(q, ((0, 0), (0, 0), (0, d_pad - d)))
+        k = jnp.pad(k, ((0, 0), (0, 0), (0, d_pad - d)))
+    out = _kernel_mv_pallas(
+        q, k, v, params, kernel_fn, kernel_vjp_fn, block_q, block_k, block_o, False
+    )
+    return out[..., :o]
+
+
+_MIN_PALLAS_DIM = 8
+
+
+def _pallas_dim(size: int) -> int:
+    """Smallest power of two >= max(size, 8)."""
+    return max(_MIN_PALLAS_DIM, 1 << (max(int(size), 1) - 1).bit_length())
 
 
 def _rbf_kernel_fn(q_block: Array, k_block: Array, params: Array) -> Array:
@@ -524,7 +732,10 @@ def rbf_kernel_mv(
     block_k: int = 64,
     block_o: int = 64,
     interpret: bool = False,
+    *,
+    implementation: str | None = None,
 ) -> Array:
+    """RBF kernel matrix-vector product; see :func:`kernel_mv` for the options."""
     lengthscale = jnp.asarray(
         lengthscale, dtype=jnp.result_type(jnp.asarray(q).dtype, jnp.float32)
     )
@@ -539,6 +750,7 @@ def rbf_kernel_mv(
         block_k=block_k,
         block_o=block_o,
         interpret=interpret,
+        implementation=implementation,
     )
 
 
@@ -599,6 +811,7 @@ def kde_density(
     block_q: int = 64,
     block_k: int = 64,
     interpret: bool = False,
+    implementation: str | None = None,
 ) -> Array:
     """Kernel density estimate using `kernel_mv`.
 
@@ -621,6 +834,7 @@ def kde_density(
             block_k=block_k,
             block_o=1,
             interpret=interpret,
+            implementation=implementation,
         ),
     )[..., 0]
 
@@ -643,6 +857,7 @@ def rbf_kde_density(
     block_q: int = 64,
     block_k: int = 64,
     interpret: bool = False,
+    implementation: str | None = None,
 ) -> Array:
     """Gaussian KDE using the RBF kernel backend."""
     query_b, _, _ = _prepare_kde_inputs(query, data, weights)
@@ -664,4 +879,5 @@ def rbf_kde_density(
         block_q=block_q,
         block_k=block_k,
         interpret=interpret,
+        implementation=implementation,
     )

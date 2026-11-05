@@ -324,11 +324,24 @@ def _run_stream(update, state, stream, num_steps, every, callback):
                 "iterator."
             ) from None
         state, info = step(state, jax.tree.map(jnp.asarray, batch))
-        infos.append(jax.tree.map(lambda leaf: leaf[None], info))
+        infos.append(info)
         due = (index + 1) % every == 0 or index + 1 == num_steps
         if callback is not None and due and callback(state, info) is False:
             break
-    return state, infos
+    return state, [_stack_steps(infos)] if infos else []
+
+
+def _stack_steps(infos: list[FitInfo]) -> FitInfo:
+    """Per-update infos -> one chunk with a leading step axis.
+
+    Stacked on the host: one transfer instead of a dispatched ``leaf[None]``
+    per update, and no ``concatenate`` over (and compiled for) every distinct
+    number of updates.
+    """
+    if any(is_tracing(leaf) for leaf in jax.tree.leaves(infos)):
+        return jax.tree.map(lambda *leaves: jnp.stack(leaves), *infos)
+    host = jax.device_get(infos)
+    return jax.tree.map(lambda *leaves: jnp.asarray(np.stack(leaves)), *host)
 
 
 def _fit(
