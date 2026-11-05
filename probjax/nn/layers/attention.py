@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import functools
 import math
@@ -1706,6 +1707,11 @@ def flex_attention(
     if deterministic:
         dropout_rate = 0.0
         dropout_rng = None
+
+    # PROBJAX_ATTN_BACKWARD (e.g. "triton_split") overrides "auto" -- for
+    # benchmarking the fused vs split backward without plumbing a parameter.
+    if backward_pass_impl == "auto" and os.environ.get("PROBJAX_ATTN_BACKWARD"):
+        backward_pass_impl = os.environ["PROBJAX_ATTN_BACKWARD"]
 
     output = mha(
         q=query,
