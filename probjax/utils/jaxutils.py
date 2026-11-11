@@ -333,7 +333,13 @@ def nested_checkpoint_scan(
     """
 
     if xs is not None:
-        length = xs.shape[0]
+        # ``xs`` may be any pytree of leading-axis arrays (SDEs scan a tuple of
+        # ``(dts, keys)``), so read the length from the first leaf instead of
+        # assuming ``xs`` is itself an array.
+        leaves = jax.tree_util.tree_leaves(xs)
+        if not leaves:
+            raise ValueError("xs must contain at least one leaf")
+        length = jnp.shape(leaves[0])[0]
     if length is not None and length != math.prod(nested_lengths):
         raise ValueError(f"inconsistent {length=} and {nested_lengths=}")
 

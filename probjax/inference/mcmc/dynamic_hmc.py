@@ -6,12 +6,13 @@ import blackjax
 from blackjax.mcmc import integrators
 from blackjax.mcmc.dynamic_hmc import halton_trajectory_length
 
-from probjax.inference.mcmc._dynamic_stepping import (
+from probjax.inference.mcmc.adaptation import window_warmup
+from probjax.inference.mcmc.base import (
+    MarkovKernelAPI,
     get_dynamic_stepping,
     init_dynamic_arg,
+    make_step_from_kernel,
 )
-from probjax.inference.mcmc.adaptation import window_warmup
-from probjax.inference.mcmc.base import MarkovKernelAPI, make_step_from_kernel
 from probjax.inference.mcmc.hmc import init_params
 
 

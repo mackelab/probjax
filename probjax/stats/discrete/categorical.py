@@ -88,7 +88,9 @@ class categorical_gen(rv_discrete, rv_exponential_family):
     @classmethod
     def entropy(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:
         """Entropy of the Categorical distribution."""
-        return -jnp.sum(probs * jnp.log(probs), axis=-1)
+        # 0 * log(0) = 0, which plain multiplication turns into NaN.
+        probs = jnp.asarray(probs)
+        return -jnp.sum(jax.scipy.special.xlogy(probs, probs), axis=-1)
 
     @classmethod
     def natural_parameters(cls, probs: ArrayLike, **kwds: Any) -> ArrayLike:

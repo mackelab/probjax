@@ -10,7 +10,7 @@ from typing import Any, Tuple
 import jax
 import jax.numpy as jnp
 from jax import random
-from jax.scipy.special import gammaln
+from jax.scipy.special import digamma, gammaln
 
 from probjax.stats.base import rv_continuous, rv_exponential_family
 from probjax.stats.constraints import real, strict_positive, strict_positive_integer
@@ -196,11 +196,15 @@ class t_gen(rv_continuous, rv_exponential_family):
         **kwargs: Any,
     ) -> ArrayLike:
         """Entropy of the Student's t-distribution."""
+        # H = log(B(1/2, df/2) * sqrt(df)) + log(scale)
+        #     + (df + 1) / 2 * (digamma((df + 1) / 2) - digamma(df / 2))
         return (
             jnp.log(scale)
-            + 0.5 * (1 + jnp.log(df))
-            + gammaln(0.5 * (df + 1))
-            - gammaln(0.5 * df)
+            + 0.5 * jnp.log(df)
+            + 0.5 * jnp.log(jnp.pi)
+            + gammaln(0.5 * df)
+            - gammaln(0.5 * (df + 1))
+            + 0.5 * (df + 1) * (digamma(0.5 * (df + 1)) - digamma(0.5 * df))
         )
 
     @classmethod

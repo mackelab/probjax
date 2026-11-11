@@ -710,11 +710,26 @@ register_univariate_inverse_logdet(
 # mul: z = x * y. Solving for x: x = z/y, dx/dz = 1/y => log|det| = -sum(log|y|)
 # The known operand may have been broadcast (e.g. scalar * vector); its logdet
 # contribution counts once per output element.
+def _log_abs(value: Any) -> Any:
+    """``log|value|`` floored at the dtype's smallest normal.
+
+    The floor is a numerical-stability guard: a singular factor then yields a
+    large *finite* negative log-det instead of ``-inf``. Because it is set at
+    the representability limit rather than an absolute constant, it cannot
+    clamp a legitimate scale -- ``log(finfo.tiny)`` is about ``-87.3`` for
+    float32 and ``-708.4`` for float64, while any value the dtype can represent
+    normally is returned exactly.
+    """
+    value = jnp.asarray(value)
+    dtype = jnp.result_type(value.dtype, jnp.float32)
+    return jnp.log(jnp.maximum(jnp.abs(value), jnp.finfo(dtype).tiny))
+
+
 def _mul_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
     # Solving for either side: the recovered factor is out/other, so
     # d(factor)/d(out) = 1/other.
     other = jnp.broadcast_to(other, jnp.shape(out_val))
-    return -jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
+    return -jnp.sum(_log_abs(other))
 
 
 register_bivariate_inverse_logdet(
@@ -731,16 +746,14 @@ register_bivariate_inverse_logdet(
 def _div_left_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
     # Solving for left (numerator): left = out * right, d(left)/d(out) = right
     other = jnp.broadcast_to(other, jnp.shape(out_val))
-    return jnp.sum(jnp.log(jnp.abs(other) + 1e-10))
+    return jnp.sum(_log_abs(other))
 
 
 def _div_right_logdet(out_val: Any, result: Any, other: Any, params: Any) -> Any:
     # Solving for right (denominator): right = left / out
     # d(right)/d(out) = -left / out^2
     other = jnp.broadcast_to(other, jnp.shape(out_val))
-    return jnp.sum(jnp.log(jnp.abs(other) + 1e-10)) - 2.0 * jnp.sum(
-        jnp.log(jnp.abs(out_val) + 1e-10)
-    )
+    return jnp.sum(_log_abs(other)) - 2.0 * jnp.sum(_log_abs(out_val))
 
 
 register_bivariate_inverse_logdet(

@@ -73,7 +73,10 @@ def _solve_temperature(loglik: Array, temperature: Array, target_ess: float) -> 
     """
 
     def relative_ess(delta):
-        log_weights = nan_to_neg_inf(delta * loglik)
+        # One weight per particle: a data-tempered log-likelihood gives one
+        # term per observation, which must be summed into a single weight.
+        event_axes = tuple(range(1, loglik.ndim))
+        log_weights = nan_to_neg_inf(jnp.sum(delta * loglik, axis=event_axes))
         return jnp.exp(log_ess(log_weights)) / loglik.shape[0]
 
     def bisect(_, bounds):

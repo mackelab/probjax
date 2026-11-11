@@ -152,10 +152,14 @@ class mixture_gen(rv_generic):
             [comp.rvs(key_sample, shape=shape) for comp in components], axis=-1
         )
 
-        # Sample cluster membership
+        # Sample cluster membership. random.categorical expects logits, so
+        # passing the probabilities straight in would draw from
+        # softmax(mixing_probs).
+        mixing_probs = jnp.asarray(mixing_probs)
+        logits = jnp.log(jnp.clip(mixing_probs, jnp.finfo(mixing_probs.dtype).tiny))
         cluster_membership = random.categorical(
             key_cluster_membership,
-            mixing_probs,
+            logits,
             shape=shape,
         )
         while cluster_membership.ndim < component_samples.ndim:
@@ -317,7 +321,7 @@ class mixture_gen(rv_generic):
         mixing_probs_init: Optional[ArrayLike] = None,
         max_iter: int = 100,
         tol: float = 1e-4,
-        rng = None,
+        rng=None,
         **kwds: Any,
     ):
         """Fit a finite mixture model with analytic weighted M-steps."""
