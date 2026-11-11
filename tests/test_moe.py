@@ -1,10 +1,13 @@
 import jax
 import jax.numpy as jnp
-import pytest
 import numpy as np
+import pytest
 from flax import nnx
 
 from probjax.nn.layers.moe import ExpertSwiGLU, MoELayer, load_balance_loss
+
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
 
 
 def _make_layer(
@@ -192,7 +195,7 @@ def test_dropless_gradients_match_dense():
         assert jnp.allclose(la, lb, atol=1e-4)
 
 
-@pytest.mark.parametrize("impl", ["triton", "blocked", "ragged_dot", "pallas"])
+@pytest.mark.parametrize("impl", ["triton", "blocked", "chunked", "ragged_dot", "pallas"])
 def test_dropless_impls_match_dense(impl):
     """Every dropless backend computes the dense reference; "triton" forces the
     Triton grouped GEMM (interpret mode off-GPU), on Hopper too."""
@@ -203,7 +206,7 @@ def test_dropless_impls_match_dense(impl):
     assert jnp.allclose(moe(x), ref(x), atol=1e-4)
 
 
-@pytest.mark.parametrize("impl", ["triton", "blocked"])
+@pytest.mark.parametrize("impl", ["triton", "blocked", "chunked"])
 def test_dropless_gradients_match_dense_per_impl(impl):
     moe, ref = _routing_pair("dropless", dropless_impl=impl)
     x = jax.random.normal(jax.random.key(6), (12, 8))
@@ -211,7 +214,11 @@ def test_dropless_gradients_match_dense_per_impl(impl):
     def loss(m):
         return jnp.sum(m(x) ** 2)
 
-    for la, lb in zip(jax.tree.leaves(nnx.grad(loss)(moe)), jax.tree.leaves(nnx.grad(loss)(ref))):
+    # The chunked XLA path's dots run as TF32 on a GPU (Triton's tiny tiles
+    # here do not); compare it at full precision.
+    with jax.default_matmul_precision("highest" if impl == "chunked" else None):
+        ga, gb = nnx.grad(loss)(moe), nnx.grad(loss)(ref)
+    for la, lb in zip(jax.tree.leaves(ga), jax.tree.leaves(gb)):
         assert jnp.allclose(la, lb, atol=1e-3)
 
 
@@ -321,3 +328,95 @@ def test_fine_grained_dropless_with_shared_expert_matches_dense():
     assert jnp.any(ga["shared"]["down"]["kernel"][...] != 0)
     for la, lb in zip(jax.tree.leaves(ga), jax.tree.leaves(gb), strict=True):
         assert jnp.allclose(la, lb, atol=1e-4)
+
+
+# ------------------------------------------------- chunked (CPU) dropless path
+
+
+def _dense_moe_reference(x, gates, wg, wu, wd, ids):
+    """Every expert on every token, combined with the top-k gates."""
+    hi = jax.lax.Precision.HIGHEST
+    g = jnp.einsum("nd,edh->enh", x, wg, precision=hi)
+    u = jnp.einsum("nd,edh->enh", x, wu, precision=hi)
+    y = jnp.einsum("enh,ehd->end", jax.nn.silu(g) * u, wd, precision=hi)
+    mix = jnp.zeros((x.shape[0], wg.shape[0])).at[jnp.arange(x.shape[0])[:, None], ids].add(gates)
+    return jnp.einsum("ne,end->nd", mix, y, precision=hi)
+
+
+def _rel(a, b):
+    a, b = np.asarray(a, np.float64), np.asarray(b, np.float64)
+    return float(np.linalg.norm(a - b) / max(np.linalg.norm(b), 1e-30))
+
+
+@pytest.mark.parametrize(
+    "n, e, k, chunk, skew",
+    [
+        (37, 8, 2, 8, False),  # groups span several chunks, last chunk partial
+        (37, 8, 2, 256, False),  # chunk larger than all rows
+        (100, 16, 4, 16, True),  # one hot expert, one empty expert
+        (5, 4, 4, 4, False),  # top_k == E
+        (301, 8, 1, 64, True),  # every token on expert 0, the rest empty
+    ],
+)
+def test_moe_swiglu_chunked_matches_dense_reference(n, e, k, chunk, skew):
+    from probjax.nn.layers.grouped_matmul import moe_swiglu_chunked
+
+    d, h = 24, 40
+    ks = jax.random.split(jax.random.key(n), 6)
+    x = jax.random.normal(ks[0], (n, d))
+    wg = jax.random.normal(ks[1], (e, d, h)) / d**0.5
+    wu = jax.random.normal(ks[2], (e, d, h)) / d**0.5
+    wd = jax.random.normal(ks[3], (e, h, d)) / h**0.5
+    logits = jax.random.normal(ks[4], (n, e))
+    if skew:
+        logits = logits.at[:, 0].add(5.0).at[:, 2].add(-50.0)
+    top, ids = jax.lax.top_k(logits, k)
+    gates = jax.nn.softmax(top, -1)
+    counts = jnp.bincount(ids.ravel(), length=e)
+    if skew:
+        assert int(counts[2]) == 0 or k == e
+
+    def loss(fn):
+        return lambda *a: jnp.sum(jnp.sin(fn(*a)))
+
+    chunked = lambda x, g, a, b, c: moe_swiglu_chunked(x, g, a, b, c, ids, counts, chunk)  # noqa: E731
+    dense = lambda x, g, a, b, c: _dense_moe_reference(x, g, a, b, c, ids)  # noqa: E731
+    args = (x, gates, wg, wu, wd)
+    tol = 1e-5 if jax.default_backend() == "cpu" else 3e-3  # GPU: TF32 dots
+    assert _rel(jax.jit(chunked)(*args), dense(*args)) < tol
+    ga = jax.jit(jax.grad(loss(chunked), argnums=range(5)))(*args)
+    gb = jax.grad(loss(dense), argnums=range(5))(*args)
+    for a, b in zip(ga, gb, strict=True):
+        assert _rel(a, b) < tol
+
+
+@pytest.mark.parametrize("dtype", [None, jnp.bfloat16])
+def test_chunked_layer_matches_dense_with_shared_expert(dtype):
+    def layer(routing, impl="auto"):
+        return MoELayer(8, 16, 6, top_k=3, shared_hidden=12, dtype=dtype, routing=routing,
+                        dropless_impl=impl, rngs=nnx.Rngs(1))
+
+    x = jax.random.normal(jax.random.key(8), (2, 33, 8))
+    y, y_ref = layer("dropless", "chunked")(x), layer("dense")(x)
+    assert y.dtype == layer("dropless", "blocked")(x).dtype
+    assert _rel(y.astype(jnp.float32), y_ref.astype(jnp.float32)) < (2e-2 if dtype else 1e-5)
+
+
+def test_auto_on_cpu_never_runs_pallas_interpret_mode(monkeypatch):
+    """On CPU "auto" resolves to the chunked XLA path for every dispatch mode
+    (it used to run the Triton kernels in Pallas interpret mode for gather /
+    fused dispatch)."""
+    if jax.default_backend() != "cpu":
+        pytest.skip("CPU resolution")
+    import probjax.nn.layers.moe as moe_mod
+
+    def boom(*a, **k):
+        raise AssertionError("Pallas path used on CPU")
+
+    monkeypatch.setattr(moe_mod, "moe_swiglu_dispatch", boom)
+    monkeypatch.setattr(moe_mod, "grouped_swiglu", boom)
+    x = jax.random.normal(jax.random.key(9), (21, 8))
+    for dispatch in ("sorted", "gather", "fused", "fused_gsum"):
+        m = MoELayer(8, 16, 4, routing="dropless", dropless_dispatch=dispatch, rngs=nnx.Rngs(0))
+        ref = MoELayer(8, 16, 4, routing="dense", rngs=nnx.Rngs(0))
+        assert _rel(m(x), ref(x)) < 1e-5

@@ -6,7 +6,6 @@ from flax import nnx
 
 from probjax.core import inverse, inverse_and_logabsdet
 from probjax.nn import (
-    MLP,
     AdditiveBinaryFuse,
     AdditiveCouplingFlow,
     AdditiveFuse,
@@ -32,6 +31,11 @@ from probjax.nn.layers.attention import (
     flex_attention,
 )
 from probjax.nn.pallas_kernels import BatchedLowRankBias, KVLenMask
+from tests._tolerance import fp32_tol
+
+# GPU: XLA float32 matmuls in true float32 (tests/conftest.py), as on CPU.
+pytestmark = pytest.mark.float32_matmul
+
 
 pytest_plugins = ["tests.test_problems.nns"]
 
@@ -291,8 +295,8 @@ def test_induced_self_attention_x_kv_mask_bias_and_shapes():
     np.testing.assert_allclose(
         np.asarray(y_uniq_dense), np.asarray(expected_unique), atol=1e-5
     )
-    np.testing.assert_allclose(
-        np.asarray(y_uniq_flex), np.asarray(expected_unique), atol=1e-5
+    np.testing.assert_allclose(  # Pallas kernel: TF32 dots on GPU
+        np.asarray(y_uniq_flex), np.asarray(expected_unique), **fp32_tol(atol=1e-5)
     )
 
     # 5. Rank-2 (unbatched) and rank-4 (multi-batch) inputs preserve shape
@@ -331,7 +335,8 @@ def test_set_transformer_benchmark_audit_and_smoke():
     assert audit["unpadded_vs_padded_max_err"] < 1e-5
     assert audit["x_kv_query_perturbation_max_err"] == 0.0
     assert audit["proportional_attention_merge_dense_max_err"] < 1e-5
-    assert audit["proportional_attention_merge_flex_max_err"] < 1e-5
+    # The flex path runs the Pallas kernel (TF32 dots on GPU): see tests/_tolerance.py.
+    assert audit["proportional_attention_merge_flex_max_err"] < fp32_tol(atol=1e-5)["atol"]
     assert audit["bfloat16_output_is_bf16"] is True
 
     rows = evaluate_task_arm(
@@ -537,8 +542,11 @@ def test_autoregressive_ssm_roundtrip():
     model.decoder.kernel[...] = jnp.ones_like(model.decoder.kernel[...])
     x = jax.random.normal(jax.random.key(1), (2, 6, 1))
 
-    y = model(x)
-    x_inv = model.inverse(y)
+    # Full fp32 matmuls: under TF32 the GPU autotuner may pick different
+    # algorithms for the scanned forward and the one-shot inverse (~1e-3 apart).
+    with jax.default_matmul_precision("highest"):
+        y = model(x)
+        x_inv = model.inverse(y)
 
     assert y.shape == x.shape
     assert jnp.allclose(x, x_inv, atol=1e-5, rtol=1e-5)

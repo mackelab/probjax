@@ -27,28 +27,28 @@ except Exception:  # pragma: no cover - depends on local jax build
     cuda_versions = None
 
 if TYPE_CHECKING:
-    from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels import attention_mgpu as _attention_mgpu
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         TuningConfig,
     )
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         attention as _attention_impl,
     )
-    from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+    from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
         attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
     )
 
     _FLASH3_IMPORT_ERROR: Exception | None = None
 else:
     try:
-        from jax.experimental.pallas.ops.gpu import attention_mgpu as _attention_mgpu
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels import attention_mgpu as _attention_mgpu
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             TuningConfig,
         )
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             attention as _attention_impl,
         )
-        from jax.experimental.pallas.ops.gpu.attention_mgpu import (
+        from probjax.nn.pallas_kernels.kernels.attention_mgpu import (
             attention_with_pipeline_emitter as _attention_with_pipeline_emitter_impl,
         )
 
@@ -135,23 +135,27 @@ def _ensure_flash3_supported(*, causal: bool, use_pipeline_emitter: bool) -> Non
 # per primitive) plus the backward; sharding rules, validation, batching and
 # abstract eval all derive from the specs.
 
+# Queries and keys have their own sequence and head factors: the Mosaic kernel
+# takes Lq != Lkv (cross-attention) and fewer K/V heads (GQA/MQA).
 _FLASH_FWD_SPEC = KernelSpec(
     name="flash3_fwd",
     operands=(
-        Operand("q", ("batch", "seq", "heads", "head_dim")),
-        Operand("k", ("batch", "seq", "heads", "head_dim")),
-        Operand("v", ("batch", "seq", "heads", "head_dim")),
+        Operand("q", ("batch", "q_seq", "heads", "head_dim")),
+        Operand("k", ("batch", "kv_seq", "kv_heads", "head_dim")),
+        Operand("v", ("batch", "kv_seq", "kv_heads", "head_dim")),
+        # Per-batch number of valid keys (KVLenMask / padded keys).
+        Operand("kv_lengths", ("batch",), optional=True),
     ),
-    outputs=(Output(("batch", "seq", "heads", "head_dim"), dtype_like="q"),),
-    shardable=frozenset({"batch", "heads"}),
+    outputs=(Output(("batch", "q_seq", "heads", "head_dim"), dtype_like="q"),),
+    shardable=frozenset({"batch", "heads", "kv_heads"}),
 )
 
 _FLASH_FWD_RES_SPEC = KernelSpec(
     name="flash3_fwd_res",
     operands=_FLASH_FWD_SPEC.operands,
     outputs=(
-        Output(("batch", "seq", "heads", "head_dim"), dtype_like="q"),
-        Output(("batch", "heads", "seq"), dtype_like=jnp.float32),
+        Output(("batch", "q_seq", "heads", "head_dim"), dtype_like="q"),
+        Output(("batch", "heads", "q_seq"), dtype_like=jnp.float32),
     ),
     shardable=_FLASH_FWD_SPEC.shardable,
 )
@@ -166,26 +170,36 @@ _FLASH_BWD_SPEC = derive_bwd_spec(
         res("v"),
         out_res(0, "out"),
         out_res(1, "lse"),
+        res("kv_lengths"),
     ),
     outputs=(grad("q"), grad("k"), grad("v")),
 )
 
 
-def _run_flash_forward_raw(q, k, v, *, config, save_residuals, use_pipeline_emitter):
+def _run_flash_forward_raw(
+    q, k, v, kv_lengths=None, *, config, save_residuals, use_pipeline_emitter
+):
     if use_pipeline_emitter:
+        if kv_lengths is not None:
+            raise NotImplementedError("KV lengths are not supported with the pipeline emitter.")
         implementation = _attention_with_pipeline_emitter_impl
     else:
         implementation = _attention_forward_impl or _attention_impl
     if implementation is None:
         raise RuntimeError("This JAX build does not provide the Flash3 forward kernel.")
-    result: Any = implementation(q, k, v, config=config, save_residuals=save_residuals)
+    extra = {} if kv_lengths is None else {"kv_lengths": kv_lengths}
+    result: Any = implementation(q, k, v, config=config, save_residuals=save_residuals, **extra)
     if save_residuals:
         out, (lse,) = result
         return out, lse
     return result
 
 
-def _run_flash_backward_raw(do, q, k, v, out, lse, *, config):
+def _run_flash_backward_raw(do, q, k, v, out, lse, kv_lengths=None, *, config):
+    if kv_lengths is not None:
+        return _attention_backward_impl(
+            config, False, (q, k, v, out, lse), do, kv_lengths=kv_lengths
+        )
     if _attention_backward_impl is None:
         attention_impl = _attention_impl
         if attention_impl is None:
@@ -204,30 +218,32 @@ def _run_flash_backward_raw(do, q, k, v, out, lse, *, config):
     return _attention_backward_impl(config, False, (q, k, v, out, lse), do)
 
 
-def _flash_fwd_impl(q, k, v, *, config, use_pipeline_emitter):
+def _flash_fwd_impl(q, k, v, kv_lengths, *, config, use_pipeline_emitter):
     return _run_flash_forward_raw(
         q,
         k,
         v,
+        kv_lengths,
         config=config,
         save_residuals=False,
         use_pipeline_emitter=use_pipeline_emitter,
     )
 
 
-def _flash_fwd_res_impl(q, k, v, *, config, use_pipeline_emitter):
+def _flash_fwd_res_impl(q, k, v, kv_lengths, *, config, use_pipeline_emitter):
     return _run_flash_forward_raw(
         q,
         k,
         v,
+        kv_lengths,
         config=config,
         save_residuals=True,
         use_pipeline_emitter=use_pipeline_emitter,
     )
 
 
-def _flash_bwd_impl(do, q, k, v, out, lse, *, config):
-    return _run_flash_backward_raw(do, q, k, v, out, lse, config=config)
+def _flash_bwd_impl(do, q, k, v, out, lse, kv_lengths, *, config):
+    return _run_flash_backward_raw(do, q, k, v, out, lse, kv_lengths, config=config)
 
 
 flash3_fwd_p = make_kernel_primitive(_FLASH_FWD_SPEC, impl=_flash_fwd_impl)
@@ -235,11 +251,11 @@ flash3_fwd_res_p = make_kernel_primitive(_FLASH_FWD_RES_SPEC, impl=_flash_fwd_re
 flash3_bwd_p = make_kernel_primitive(_FLASH_BWD_SPEC, impl=_flash_bwd_impl)
 
 
-def _flash_forward(q, k, v, config, save_residuals, use_pipeline_emitter):
+def _flash_forward(q, k, v, config, save_residuals, use_pipeline_emitter, kv_lengths=None):
     prim = flash3_fwd_res_p if save_residuals else flash3_fwd_p
     return shardable_kernel(
         prim,
-        {"q": q, "k": k, "v": v},
+        {"q": q, "k": k, "v": v, "kv_lengths": kv_lengths},
         config=config,
         use_pipeline_emitter=use_pipeline_emitter,
     )
@@ -248,33 +264,33 @@ def _flash_forward(q, k, v, config, save_residuals, use_pipeline_emitter):
 @functools.lru_cache(maxsize=None)
 def _make_flash_attention(config: TuningConfig):
     @jax.custom_vjp
-    def _attn(q, k, v):
-        return _flash_forward(q, k, v, config, False, False)
+    def _attn(q, k, v, kv_lengths):
+        return _flash_forward(q, k, v, config, False, False, kv_lengths)
 
-    def _attn_fwd(q, k, v):
-        out, lse = _flash_forward(q, k, v, config, True, False)
-        return out, (q, k, v, out, lse)
+    def _attn_fwd(q, k, v, kv_lengths):
+        out, lse = _flash_forward(q, k, v, config, True, False, kv_lengths)
+        return out, (q, k, v, out, lse, kv_lengths)
 
     def _attn_bwd(res, do):
-        do_q, do_k, do_v, out, lse = res
-        return tuple(
-            shardable_kernel(
-                flash3_bwd_p,
-                {"do": do, "q": do_q, "k": do_k, "v": do_v, "out": out, "lse": lse},
-                config=config,
-            )
+        do_q, do_k, do_v, out, lse, kv_lengths = res
+        dq, dk, dv = shardable_kernel(
+            flash3_bwd_p,
+            {"do": do, "q": do_q, "k": do_k, "v": do_v, "out": out, "lse": lse,
+             "kv_lengths": kv_lengths},
+            config=config,
         )
+        return dq, dk, dv, None  # integer lengths: no cotangent
 
     _attn.defvjp(_attn_fwd, _attn_bwd)
     return _attn
 
 
-def attention(q, k, v, config: TuningConfig, save_residuals: bool = False):
+def attention(q, k, v, config: TuningConfig, save_residuals: bool = False, kv_lengths=None):
     _ensure_flash3_supported(causal=config.causal, use_pipeline_emitter=False)
     if save_residuals:
-        out, lse = _flash_forward(q, k, v, config, True, False)
+        out, lse = _flash_forward(q, k, v, config, True, False, kv_lengths)
         return out, (lse,)
-    return _make_flash_attention(config)(q, k, v)
+    return _make_flash_attention(config)(q, k, v, kv_lengths)
 
 
 def attention_with_pipeline_emitter(
@@ -340,13 +356,13 @@ def mha_flash(
     module=None,
     sm_scale: float | None = None,
     enable_gqa: bool = False,
-    block_q: int = 128,
-    block_k: int = 128,
+    block_q: int | None = None,
+    block_k: int | None = None,
     block_kv: int | None = None,
     max_concurrent_steps: int = 2,
     use_schedule_barrier: bool = True,
     causal: bool = False,
-    compute_wgs_bwd: int = 1,
+    compute_wgs_bwd: int | None = None,
     block_q_dkv: int | None = None,
     block_kv_dkv: int | None = None,
     block_q_dq: int | None = None,
@@ -362,10 +378,16 @@ def mha_flash(
         use_pipeline_emitter=use_pipeline_emitter,
     )
 
-    if mask is not None:
-        raise NotImplementedError(
-            "mha_flash currently supports mask=None only; use causal=True for causal attention.",
-        )
+    from probjax.nn.pallas_kernels.attention_mask_bias import KVLenMask, NoMask
+
+    kv_lengths = None
+    if mask is not None and type(mask) is not NoMask:
+        if type(mask) is not KVLenMask:
+            raise NotImplementedError(
+                "mha_flash supports mask=None, NoMask or KVLenMask (use causal=True for "
+                f"causal attention), got {type(mask).__name__}.",
+            )
+        kv_lengths = jnp.asarray(mask.kv_lengths, jnp.int32)
     if bias is not None:
         raise NotImplementedError("mha_flash does not support additive attention bias.")
 
@@ -419,17 +441,24 @@ def mha_flash(
             f"Expected Hq to be divisible by Hkv for GQA, got Hq={query.shape[-2]}, Hkv={key.shape[-2]}.",
         )
 
+    # Tiles: when the caller sets none, use the configuration tuned on H100
+    # (bf16, head_dim <= 128; docs/benchmarks/gpu_attention_h100_device.json): 64 x 128
+    # forward tiles, backward dK/dV 128 x 64 and dQ 64 x 128 with two compute
+    # warpgroups -- 2.4-4.1x faster fwd+bwd than 128 x 128 / one warpgroup, and
+    # within 8-17% of cuDNN.  Deeper pipelines or 128 x 128 tiles with two
+    # warpgroups exceed the 227 KB of shared memory at head_dim 128.
+    untuned = (block_q, block_k, block_kv, compute_wgs_bwd, block_q_dkv, block_kv_dkv,
+               block_q_dq, block_kv_dq)
+    if all(x is None for x in untuned) and query.shape[-1] <= 128:
+        block_q, block_kv, compute_wgs_bwd = 64, 128, 2
+        block_q_dkv, block_kv_dkv, block_q_dq, block_kv_dq = 128, 64, 64, 128
+    block_q = 128 if block_q is None else block_q
+    block_k = 128 if block_k is None else block_k
+    compute_wgs_bwd = 1 if compute_wgs_bwd is None else compute_wgs_bwd
     block_kv = block_k if block_kv is None else block_kv
     q_len = query.shape[1]
     kv_len = key.shape[1]
-    q_multiple = block_q if use_pipeline_emitter else (2 * block_q)
-    if q_len % q_multiple:
-        raise ValueError(
-            f"{q_len=} must be a multiple of {q_multiple=} for this kernel."
-        )
-    if kv_len % block_kv:
-        raise ValueError(f"{kv_len=} must be a multiple of {block_kv=}.")
-
+    head_dim = query.shape[-1]
     if (
         block_q_dkv is None
         and block_kv_dkv is None
@@ -440,10 +469,37 @@ def mha_flash(
         block_kv_dkv = block_kv
         block_q_dq = block_q
         block_kv_dq = block_kv
+    # Sequence multiples the forward and both backward kernels need.
+    if use_pipeline_emitter:
+        q_multiple, kv_multiple = block_q, block_kv
+    else:
+        q_multiple = math.lcm(2 * block_q, block_q_dq * compute_wgs_bwd, block_q_dkv)
+        kv_multiple = math.lcm(block_kv, block_kv_dkv * compute_wgs_bwd, block_kv_dq)
+    q_pad = -q_len % q_multiple
+    kv_pad = -kv_len % kv_multiple
+    if causal and (q_pad or kv_pad or kv_lengths is not None):
+        raise NotImplementedError(
+            f"causal mha_flash needs {q_len=} / {kv_len=} to be multiples of "
+            f"{q_multiple} / {kv_multiple} and no KV lengths."
+        )
+    if kv_pad:
+        # Padded keys are masked in the kernel by the KV length.
+        full = jnp.full((query.shape[0],), kv_len, jnp.int32)
+        kv_lengths = full if kv_lengths is None else jnp.minimum(kv_lengths, full)
+    if kv_lengths is not None and kv_lengths.shape != (query.shape[0],):
+        raise ValueError(f"KVLenMask lengths must have shape (batch,), got {kv_lengths.shape}.")
+    d_pad = -head_dim % 64
 
     if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(query.shape[-1])
+        sm_scale = 1.0 / math.sqrt(head_dim)
     query = query * jnp.asarray(sm_scale, dtype=query.dtype)
+    # Exact padding: extra query rows are sliced off; zero head-dim columns add
+    # nothing to q.k and their (zero) value columns are sliced off.
+    if q_pad or d_pad:
+        query = jnp.pad(query, ((0, 0), (0, q_pad), (0, 0), (0, d_pad)))
+    if kv_pad or d_pad:
+        key = jnp.pad(key, ((0, 0), (0, kv_pad), (0, 0), (0, d_pad)))
+        value = jnp.pad(value, ((0, 0), (0, kv_pad), (0, 0), (0, d_pad)))
 
     config = TuningConfig(
         block_q=block_q,
@@ -473,12 +529,18 @@ def mha_flash(
             value,
             config=config,
             save_residuals=save_residuals,
+            kv_lengths=kv_lengths,
         )
     )
 
+    if save_residuals:
+        out_value, residuals = out
+        out_value = out_value[:, :q_len, :, :head_dim]
+        residuals = tuple(r[..., :q_len] for r in residuals)  # lse: (B, H, Lq)
+    else:
+        out_value, residuals = out[:, :q_len, :, :head_dim], None
+
     if added_batch_dim:
-        if save_residuals:
-            out_value, residuals = out
-            return out_value[0], tuple(r[0] for r in residuals)
-        return out[0]
-    return out
+        out_value = out_value[0]
+        residuals = None if residuals is None else tuple(r[0] for r in residuals)
+    return (out_value, residuals) if save_residuals else out_value

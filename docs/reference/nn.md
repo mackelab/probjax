@@ -418,6 +418,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.DropPath
 ::: probjax.nn.ExpertSwiGLU
 ::: probjax.nn.FeedForward
+::: probjax.nn.GatedDeltaNetCell
 ::: probjax.nn.GatedFuse
 ::: probjax.nn.GaussianFourierEmbedding
 ::: probjax.nn.InducedSelfAttention
@@ -427,6 +428,7 @@ re-exported for convenience and documented there.
 ::: probjax.nn.LowRankLinear
 ::: probjax.nn.LpNorm
 ::: probjax.nn.LpNormClip
+::: probjax.nn.Mamba2Cell
 ::: probjax.nn.MambaCell
 ::: probjax.nn.MaskedLinear
 ::: probjax.nn.MaskedMLP

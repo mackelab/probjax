@@ -39,6 +39,7 @@ from jax.experimental.pallas import triton as plgpu
 
 from probjax.utils.jaxutils import where
 
+from ..attention_mask_bias import QKVLengthMask
 from ..kernel_utils import (
     DEFAULT_MASK_VALUE,
     NEG_INF,
@@ -55,6 +56,8 @@ from ..kernel_utils.kernel_primitive import (
 )
 from .attention import (
     BlockSizes,
+    _aligned_seq_len,
+    _check_paddable,
     _dropout_mask_counter,
     _extract_fwd_data,
     _flatten_optional_pytree,
@@ -65,6 +68,7 @@ from .attention import (
     pallas_load,
     pallas_store,
 )
+from .attention_xla import use_xla_attention, xla_attention
 
 
 def _pad_to_multiple(x: jax.Array, axis: int, multiple: int) -> jax.Array:
@@ -584,6 +588,51 @@ def _make_mla_custom_vjp(
     return _mla
 
 
+def _xla_mla(
+    q, cache, wk, wv, *, mask, bias, rng, sm_scale, dropout_rate, dropout_impl
+):
+    """CPU path: XLA attention over the shared latent, without Pallas.
+
+    The latent is used as a single shared KV head (GQA with one KV head), so
+    the absorbed form never repeats the cache across heads.  With up-projections
+    the cheaper of two exact factorizations is chosen by FLOP count:
+
+    * materialize ``K = C W_K^T``, ``V = C W_V^T`` per head and attend, or
+    * absorb ``W_K`` into the queries (``q W_K`` attends over ``C``) and apply
+      ``W_V`` to the latent-space output -- cheaper when the query length is
+      small relative to the cache (decoding) or the latent is narrow.
+    """
+    common = dict(
+        mask=mask,
+        bias=bias,
+        rng=rng,
+        sm_scale=sm_scale,
+        dropout_rate=dropout_rate,
+        dropout_impl=dropout_impl,
+    )
+    shared = cache[:, :, None, :]  # [B, S, 1, R]
+    if wk is None:
+        return xla_attention(q, shared, shared, **common)
+    q_len, kv_len, rank = q.shape[1], cache.shape[1], cache.shape[-1]
+    dk, dv = wk.shape[1], wv.shape[1]
+    materialized_cost = kv_len * rank * (dk + dv) + q_len * kv_len * (dk + dv)
+    absorbed_cost = q_len * rank * (dk + dv) + 2 * q_len * kv_len * rank
+    if absorbed_cost < materialized_cost:
+        q_lat = jnp.einsum("bqhd,hdr->bqhr", q, wk)
+        o_lat = xla_attention(q_lat, shared, shared, **common)
+        return jnp.einsum("bqhr,hdr->bqhd", o_lat, wv)
+    key, value = _materialize_kv(cache, wk, wv, q.shape[-2])
+    return xla_attention(q, key, value, **common)
+
+
+def _paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len) -> bool:
+    try:
+        _check_paddable(mask, bias, dropout_rate, dropout_impl, q_len, kv_len)
+    except ValueError:
+        return False
+    return True
+
+
 def mla(
     q: jax.Array,
     cache: jax.Array,
@@ -654,8 +703,51 @@ def mla(
     mask_treedef, mask_leaves = _flatten_optional_pytree(mask)
     bias_treedef, bias_leaves = _flatten_optional_pytree(bias)
 
-    if jax.default_backend() == "cpu":
-        interpret = True
+    if use_xla_attention(q, interpret):
+        return _xla_mla(
+            q,
+            cache,
+            wk,
+            wv,
+            mask=mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+
+    # The forward kernel tiles Q and the latent sequence with
+    # ``min(block, length)`` and Triton needs power-of-two tiles, so a short
+    # non-power-of-two length (e.g. 48) only lowers in interpret mode.  As in
+    # :func:`mha`, pad unaligned lengths and mask the padded latent rows (padded
+    # query rows are sliced off) whenever the mask and bias allow it.
+    q_len, kv_len = int(q.shape[1]), int(cache.shape[1])
+    q_pad = _aligned_seq_len(q_len, block_sizes.block_q)
+    kv_pad = _aligned_seq_len(kv_len, block_sizes.block_k)
+    if (q_pad, kv_pad) != (q_len, kv_len) and _paddable(
+        mask, bias, dropout_rate, dropout_impl, q_len, kv_len
+    ):
+        length_mask = QKVLengthMask(q_length=q_pad, kv_length=kv_len, block_sparse=False)
+        out = mla(
+            jnp.pad(q, ((0, 0), (0, q_pad - q_len), (0, 0), (0, 0))),
+            jnp.pad(cache, ((0, 0), (0, kv_pad - kv_len), (0, 0))),
+            wk,
+            wv,
+            mask=length_mask if mask is None else mask & length_mask,
+            bias=bias,
+            rng=rng,
+            sm_scale=sm_scale,
+            block_sizes=block_sizes,
+            backward_pass_impl=backward_pass_impl,
+            num_warps=num_warps,
+            num_stages=num_stages,
+            interpret=interpret,
+            debug=debug,
+            dropout_rate=dropout_rate,
+            dropout_impl=dropout_impl,
+        )
+        return out[:, :q_len]
 
     fn = _make_mla_custom_vjp(
         mask_treedef=mask_treedef,
