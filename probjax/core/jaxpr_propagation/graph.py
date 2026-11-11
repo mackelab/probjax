@@ -259,6 +259,15 @@ class JaxprGraph:
             )
 
     @property
+    def graph(self) -> nx.DiGraph:
+        """The underlying networkx graph.
+
+        Exposed so callers can inspect or plot the graph without the optional
+        pygraphviz dependency used by :meth:`__repr__`.
+        """
+        return self._graph
+
+    @property
     def eqns(self) -> dict[str, Any]:
         eqn_names = [f"f{i}" for i in range(len(self._jaxpr.eqns))]
         return dict(zip(eqn_names, self._jaxpr.eqns, strict=False))

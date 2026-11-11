@@ -27,13 +27,42 @@ REFERENCE = DOCS / "reference"
 #: Pages produced by docs/scripts/convert_notebooks.py from examples/*.ipynb.
 #: They are absent on a clean checkout; CI runs the converter first.
 GENERATED_PAGES = {
+    "tutorials/graph.md": "examples/core/graph.ipynb",
+    "tutorials/inversion.md": "examples/core/inversion.ipynb",
     "tutorials/ppl.md": "examples/core/ppl.ipynb",
+    "tutorials/distributions_basic.md": "examples/stats/distributions_basic.ipynb",
+    "tutorials/distributions_highlevel.md": "examples/stats/distributions_highlevel.ipynb",
     "tutorials/kalman_filter.md": "examples/inference/kalman_filter.ipynb",
     "tutorials/smc.md": "examples/inference/smc.ipynb",
     "tutorials/mcmc.md": "examples/inference/mcmc.ipynb",
     "tutorials/neural_mcmc.md": "examples/inference/neural_mcmc.ipynb",
     "tutorials/rejection.md": "examples/inference/rejection.ipynb",
     "tutorials/bnn.md": "examples/inference/bnn.ipynb",
+    "tutorials/filters.md": "examples/inference/filters.ipynb",
+    "tutorials/training.md": "examples/nn/training.ipynb",
+    "tutorials/moe.md": "examples/nn/moe.ipynb",
+    "tutorials/attention.md": "examples/nn/nets/attention.ipynb",
+    "tutorials/transformer.md": "examples/nn/nets/transformer.ipynb",
+    "tutorials/architectures.md": "examples/nn/nets/architectures.ipynb",
+    "tutorials/sharding.md": "examples/nn/nets/sharding.ipynb",
+    "tutorials/diffusion.md": "examples/nn/generative/diffusion.ipynb",
+    "tutorials/flow_matching.md": "examples/nn/generative/flow_matching.ipynb",
+    "tutorials/normalizing_flows.md": "examples/nn/generative/normalizing_flows.ipynb",
+    "tutorials/generative_model_tour.md": "examples/nn/generative/generative_model_tour.ipynb",
+    "tutorials/odeint.md": "examples/utils/odeint.ipynb",
+    "tutorials/sdeint.md": "examples/utils/sdeint.ipynb",
+    "tutorials/linear_operator.md": "examples/utils/linear_operator.ipynb",
+}
+
+#: Tutorials whose committed outputs come from a GPU run. Their pages are
+#: rendered normally, but the CPU docs test does not re-execute their blocks
+#: (re-training on CPU would exceed the per-page timeout). Keep in sync with
+#: ``GPU_ONLY_NOTEBOOKS`` in docs/scripts/convert_notebooks.py.
+GPU_ONLY_SOURCES = {
+    "examples/nn/generative/diffusion.ipynb",
+    "examples/nn/generative/flow_matching.ipynb",
+    "examples/nn/generative/normalizing_flows.ipynb",
+    "examples/nn/generative/generative_model_tour.ipynb",
 }
 
 #: Public names that are deliberately absent from the reference, with a reason.
@@ -187,6 +216,10 @@ def test_every_python_block_runs(page):
     Isolated execution would report false failures for continuation snippets,
     and would miss the case where a page's blocks contradict each other.
     """
+    relative = str(page.relative_to(DOCS))
+    if GENERATED_PAGES.get(relative) in GPU_ONLY_SOURCES:
+        pytest.skip("GPU-only tutorial; outputs are committed in the notebook")
+
     blocks = python_blocks(page.read_text())
     if not blocks:
         pytest.skip("no executable python blocks")

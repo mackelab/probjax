@@ -156,11 +156,11 @@ package. See the [migration guide](docs/guides/migration.md) and
 Full documentation (guides, API reference, troubleshooting) is hosted at
 https://www.mackelab.org/probjax/.
 
-- [`examples/core`](examples/core): tracing and probabilistic-program examples
+- [`examples/core`](examples/core): tracing, inversion, and probabilistic-program examples
 - [`examples/stats`](examples/stats): distribution examples
 - [`examples/inference`](examples/inference): MCMC, SMC, and filtering examples
-- [`examples/nn`](examples/nn): flows, diffusion, flow matching, and transformers
-- [`examples/utils`](examples/utils): ODE, SDE, and special-function examples
+- [`examples/nn`](examples/nn): training, MoE, flows, diffusion, flow matching, and transformers
+- [`examples/utils`](examples/utils): ODE, SDE, linear-operator, and special-function examples
 - [`docs`](docs): documentation source (getting started, guides, reference)
 
 Some notebooks predate recent API refactors and are being migrated. Prefer the

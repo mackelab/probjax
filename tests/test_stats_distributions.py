@@ -400,6 +400,24 @@ def test_distribution_class_attributes(dist):
     assert hasattr(dist, 'rvs') and callable(dist.rvs), "Missing rvs"
 
 
+@pytest.mark.parametrize(
+    "dist, params",
+    [
+        (gamma, {"alpha": 2.0, "beta": 1.5}),
+        (beta, {"alpha": 2.0, "beta": 3.0}),
+    ],
+)
+def test_frozen_interval_with_alpha_parameter(dist, params):
+    """``interval`` confidence must not collide with a distribution's alpha."""
+    frozen = dist(**params)
+    low, high = frozen.interval(0.9)
+    assert jnp.all(low < high)
+
+    low_kw, high_kw = frozen.interval(confidence=0.9)
+    assert jnp.allclose(low, low_kw)
+    assert jnp.allclose(high, high_kw)
+
+
 def test_frozen_init_rejects_invalid_arguments():
     with pytest.raises(TypeError, match="unexpected keyword argument 'foo'"):
         norm(foo=1.0)

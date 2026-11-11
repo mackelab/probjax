@@ -423,3 +423,15 @@ def test_scope_prefixes_site_names():
     assert len(samples) == 1
     only_name = next(iter(samples.keys()))
     assert "outer__norm_" in only_name
+
+
+def test_jaxpr_graph_exposes_networkx_graph():
+    from probjax.core.jaxpr_propagation.graph import JaxprGraph
+
+    def f(x, y):
+        return x + y, x - y
+
+    jaxpr = jax.make_jaxpr(f)(jnp.ones(2), jnp.ones(2))
+    graph = JaxprGraph(jaxpr.jaxpr)
+    assert set(graph.graph.nodes) == set(graph.vars) | set(graph.eqns)
+    assert graph.graph.number_of_edges() == 6
