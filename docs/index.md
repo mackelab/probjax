@@ -87,18 +87,38 @@ Python 3.11–3.13 and JAX `>=0.9.0,<0.12`. Accelerator options are in
 
 A curated set of example notebooks is rendered as part of these pages
 (generated from `examples/` without re-execution, so outputs are those
-committed in the notebooks; CI executes the generated Python examples, but
-does not regenerate their displayed outputs):
+committed in the notebooks):
 
-- [PPL basics](tutorials/ppl.md)
-- [Kalman filtering](tutorials/kalman_filter.md)
-- [Sequential Monte Carlo](tutorials/smc.md)
+- **Core**: [Jaxpr graphs](tutorials/graph.md),
+  [program inversion](tutorials/inversion.md),
+  [PPL basics](tutorials/ppl.md)
+- **Statistics**: [distribution basics](tutorials/distributions_basic.md),
+  [higher-level distributions](tutorials/distributions_highlevel.md)
+- **Inference**: [Kalman filtering](tutorials/kalman_filter.md),
+  [particle filters](tutorials/filters.md),
+  [sequential Monte Carlo](tutorials/smc.md), [MCMC](tutorials/mcmc.md),
+  [neural MCMC](tutorials/neural_mcmc.md),
+  [rejection sampling](tutorials/rejection.md),
+  [Bayesian neural networks](tutorials/bnn.md)
+- **Neural models**: [training loops](tutorials/training.md),
+  [mixture of experts](tutorials/moe.md), [attention](tutorials/attention.md),
+  [Transformer](tutorials/transformer.md),
+  [architectures](tutorials/architectures.md),
+  [sharding](tutorials/sharding.md),
+  [normalizing flows](tutorials/normalizing_flows.md),
+  [flow matching](tutorials/flow_matching.md),
+  [diffusion](tutorials/diffusion.md), and a
+  [generative-model comparison](tutorials/generative_model_tour.md)
+- **Numerical utilities**: [ODE integration](tutorials/odeint.md),
+  [SDE integration](tutorials/sdeint.md),
+  [structured linear operators](tutorials/linear_operator.md)
 
 All runnable notebooks live in
 [`examples/`](https://github.com/mackelab/probjax/tree/main/examples/)
 (`core`, `stats`, `inference`, `nn`, `utils`).
 
-The remaining notebooks may predate recent API refactors. The curated tutorial
-pages have executable examples checked by CI; stored plots and other outputs
-may reflect an earlier execution. Prefer the guides and reference when they
-disagree with an older notebook.
+CPU-runnable tutorial pages have executable examples checked by CI. The heavy
+generative notebooks (diffusion, flow matching, normalizing flows, and the
+generative-model study) carry committed GPU outputs and are not re-executed on
+CPU. The remaining notebooks may predate recent API refactors; prefer the
+guides and reference when they disagree with an older notebook.

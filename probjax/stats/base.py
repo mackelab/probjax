@@ -408,13 +408,13 @@ class rv_generic(ABC):
 
     @classmethod
     def interval(
-        cls, alpha: ArrayLike, *args: Any, **kwds: Any
+        cls, confidence: ArrayLike, *args: Any, **kwds: Any
     ) -> tuple[ArrayLike, ArrayLike]:
         """Confidence interval with equal areas around the median."""
         args, kwds = cls._parse_args(*args, **kwds)
-        alpha = jnp.asarray(alpha)
-        q1 = (1.0 - alpha) / 2
-        q2 = (1.0 + alpha) / 2
+        confidence = jnp.asarray(confidence)
+        q1 = (1.0 - confidence) / 2
+        q2 = (1.0 + confidence) / 2
         a = cls.ppf(q1, *args, **kwds)
         b = cls.ppf(q2, *args, **kwds)
         return a, b

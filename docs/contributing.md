@@ -66,16 +66,23 @@ git-ignored) and runs the full suite; later runs select affected tests. Pass
 `--no-testmon` to force the full suite.
 
 `docs/scripts/convert_notebooks.py` renders the curated `examples/` notebooks
-(`examples/core/ppl.ipynb`, `examples/inference/kalman_filter.ipynb` and
-`examples/inference/smc.ipynb`) to `docs/tutorials/` with
-`nbconvert`. Those pages are generated, git-ignored, and absent on a clean
-checkout, so run the converter before the documentation tests:
-`tests/test_docs.py::test_every_nav_entry_exists` checks the tutorial nav
-entries and `test_every_python_block_runs` executes the generated Python
-examples. The step needs `nbconvert`, `nbformat` and `matplotlib` (as CI
-installs). Use `python docs/scripts/convert_notebooks.py --check` to verify the
-generated output is current without rewriting it. CI runs the converter before
-`pytest`, and the docs workflow runs it before `zensical build --strict`.
+listed in `CURATED_NOTEBOOKS` to `docs/tutorials/` with `nbconvert`. To add a
+tutorial, add its `.ipynb` path to that list, to the nav in `zensical.toml`,
+and to `GENERATED_PAGES` in `tests/test_docs.py`. Those pages are generated,
+git-ignored, and absent on a clean checkout, so run the converter before the
+documentation tests: `tests/test_docs.py::test_every_nav_entry_exists` checks
+the tutorial nav entries and `test_every_python_block_runs` executes the
+generated Python examples. The step needs `nbconvert`, `nbformat` and
+`matplotlib` (as CI installs).
+
+Notebooks in `GPU_ONLY_NOTEBOOKS` keep committed outputs from a GPU run; the
+CPU docs test skips their pages (they are listed in `GPU_ONLY_SOURCES` in
+`tests/test_docs.py`) instead of re-training them. Refresh those notebooks on
+a GPU and commit the updated `.ipynb` when their code or outputs change.
+
+Use `python docs/scripts/convert_notebooks.py --check` to verify the generated
+output is current without rewriting it. CI runs the converter before `pytest`,
+and the docs workflow runs it before `zensical build --strict`.
 
 ### Making Changes
 

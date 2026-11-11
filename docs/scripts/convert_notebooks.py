@@ -28,18 +28,47 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Curated subset rendered into the docs. Inclusion criteria: the notebook
-# re-executes cleanly against current main (CI executes every tutorial page's
-# code blocks via test_docs.py) and needs no sibling-helper imports. Expand
-# deliberately -- heavy or stale notebooks stay out until modernized.
+# re-executes cleanly against current main and needs no uncommitted data.
+# CPU-runnable notebooks are also executed by test_docs.py; GPU-scale ones are
+# listed in GPU_ONLY_NOTEBOOKS below, keep committed GPU outputs, and are not
+# re-executed by the CPU docs test (see GPU_ONLY_SOURCES in test_docs.py).
 CURATED_NOTEBOOKS = [
+    "examples/core/graph.ipynb",
+    "examples/core/inversion.ipynb",
     "examples/core/ppl.ipynb",
+    "examples/stats/distributions_basic.ipynb",
+    "examples/stats/distributions_highlevel.ipynb",
     "examples/inference/kalman_filter.ipynb",
     "examples/inference/smc.ipynb",
     "examples/inference/mcmc.ipynb",
     "examples/inference/neural_mcmc.ipynb",
     "examples/inference/rejection.ipynb",
     "examples/inference/bnn.ipynb",
+    "examples/inference/filters.ipynb",
+    "examples/nn/training.ipynb",
+    "examples/nn/moe.ipynb",
+    "examples/nn/nets/attention.ipynb",
+    "examples/nn/nets/transformer.ipynb",
+    "examples/nn/nets/architectures.ipynb",
+    "examples/nn/nets/sharding.ipynb",
+    "examples/nn/generative/diffusion.ipynb",
+    "examples/nn/generative/flow_matching.ipynb",
+    "examples/nn/generative/normalizing_flows.ipynb",
+    "examples/nn/generative/generative_model_tour.ipynb",
+    "examples/utils/odeint.ipynb",
+    "examples/utils/sdeint.ipynb",
+    "examples/utils/linear_operator.ipynb",
 ]
+
+#: Notebooks whose committed outputs come from a GPU run. They are rendered
+#: normally, but test_docs.py skips executing their code blocks on CPU (see
+#: GPU_ONLY_SOURCES there); the notebook itself remains the executable source.
+GPU_ONLY_NOTEBOOKS = {
+    "examples/nn/generative/diffusion.ipynb",
+    "examples/nn/generative/flow_matching.ipynb",
+    "examples/nn/generative/normalizing_flows.ipynb",
+    "examples/nn/generative/generative_model_tour.ipynb",
+}
 
 OUTPUT_DIR = REPO_ROOT / "docs" / "tutorials"
 

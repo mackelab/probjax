@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] — preparing 0.2.0
 
 ### Added
+- Documentation tutorials now cover 25 curated `examples/` notebooks across
+  core, statistics, inference, neural models, and numerical utilities, grouped
+  by topic in the site navigation; the neural-model set includes a GPU-run
+  comparison of `EDM`, `LinearFlow`, and `LinearMeanFlow`
+- New tutorials for the training loop (`fit`/`fit_module`/`train_step`),
+  mixture-of-experts routing and diagnostics, program inversion, and structured
+  linear operators
+- `JaxprGraph.graph` exposes the underlying NetworkX graph, so the graph can be
+  inspected or plotted without the optional pygraphviz dependency
 - `probjax.nn.training`: `train_step(loss_fn, optimizer)` (one pure update
   `(state, batch) -> (state, info)` for custom loops), `fit(loss_fn, params,
   rng, data, **options)` and `fit_module(model, rng, data, loss=, trainable=)`;
@@ -472,6 +481,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `addopts`); the CI coverage job opts out with `--no-testmon`
 
 ### Removed
+- Leftover example material: `examples/core/trace_random.ipynb`,
+  `examples/utils/betaincinv.ipynb`,
+  `examples/nn/flows/mean_flow_matching_mnist.ipynb`, and the unverified
+  `examples/nn/images/` training scripts
 - `FitConfig`, `DataSpec`, `FitCallback`, `FitMixin` and their hooks
 - `probjax.nn.export`, `sample_from`/`path_from`, `sample_with_state`,
   `logpdf_with_state`, `model_state`, `compile`, `has_logpdf`,
@@ -555,6 +568,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- `frozen.interval()` works for distributions with an `alpha` parameter
+  (`gamma`, `beta`); the confidence argument no longer collides with the
+  distribution parameter
+- The example notebooks for distributions, SDE integration, and Jaxpr graphs
+  track the current API again (`rate`/`alpha`/`beta`, `return_aux`, and
+  `JaxprGraph.graph`), and are re-executed in the docs run
 - Sharded kernel primitives accept symbolic (shape-polymorphic) dimensions;
   attention-conditioned flows and autoregressive models now sample through
   `as_dist`
