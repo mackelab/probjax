@@ -558,5 +558,11 @@ re-exported for convenience and documented there.
 ::: probjax.nn.build_time_dependent_score_matching_loss
 ::: probjax.nn.build_time_dependent_sliced_score_matching_loss
 ::: probjax.nn.build_time_dependent_target_score_matching_loss
-::: probjax.nn.DataLoader
-::: probjax.nn.chunkify
+
+### Data
+
+::: probjax.nn.data.DataLoader
+::: probjax.nn.data.SimulationDataset
+::: probjax.nn.data.chunkify
+::: probjax.nn.data.unchunkify
+::: probjax.nn.data.compose

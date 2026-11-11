@@ -22,7 +22,7 @@ import scipy.ndimage as ndi
 from jax import tree_util
 
 from probjax.nn import LearnablePosEncode, Transformer
-from probjax.nn.io_util import DataLoader
+from probjax.nn.data import DataLoader
 from probjax.nn.layers.attention import dot_product_attention, flex_attention
 from probjax.nn.pallas_kernels import CausalMask
 
