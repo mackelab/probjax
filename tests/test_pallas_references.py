@@ -267,15 +267,36 @@ def test_mha_sharded_no_allgather_mesh(axis):
     expected_grad = jax.grad(
         lambda a, b, c: jnp.sum(_mha_reference(a, b, c) ** 2), argnums=(0, 1, 2)
     )(q, k, v)
-    for actual, expected in zip(actual_grad, expected_grad):
-        assert jnp.allclose(actual, expected, **fp32_tol(atol=2e-4, rtol=1e-4))
+    # Sharding must not change the kernel's result: compare against the
+    # unsharded kernel tightly, and against the einsum reference at the
+    # (TF32 on GPU, magnitude-scaled) kernel tolerance.
+    unsharded_grad = gradient(q, k, v)
+    for actual, unsharded, expected in zip(
+        actual_grad, unsharded_grad, expected_grad, strict=True
+    ):
+        assert jnp.allclose(actual, unsharded, atol=1e-6, rtol=1e-6)
+        tol = fp32_tol(atol=2e-4, rtol=1e-4, scale=jnp.abs(expected).max())
+        assert jnp.allclose(actual, expected, **tol)
     tangent = jax.jit(
         lambda a, b, c: jax.jvp(
             lambda x, y, z: pk.mha(x, y, z, **kwargs), (a, b, c), (a, b, c)
         )[1]
     )(qs, ks_, vs)
+    unsharded_tangent = jax.jit(
+        lambda a, b, c: jax.jvp(
+            lambda x, y, z: pk.mha(x, y, z, **kwargs), (a, b, c), (a, b, c)
+        )[1]
+    )(q, k, v)
+    assert jnp.allclose(tangent, unsharded_tangent, atol=1e-6, rtol=1e-6)
     expected_tangent = jax.jvp(_mha_reference, (q, k, v), (q, k, v))[1]
-    assert jnp.allclose(tangent, expected_tangent, **fp32_tol(atol=2e-4, rtol=1e-4))
+    # The fused JVP chains several TF32 dots: on an RTX 3080 it is ~6e-3 off
+    # the float32 reference relative to the largest tangent (XLA's own TF32
+    # einsum JVP: ~2e-3), so allow 1e-2 of the magnitude on GPU.
+    scale = float(jnp.abs(expected_tangent).max())
+    tol = fp32_tol(atol=2e-4, rtol=1e-4)
+    if jax.default_backend() == "gpu":
+        tol["atol"] = max(tol["atol"], 1e-2 * scale)
+    assert jnp.allclose(tangent, expected_tangent, **tol)
 
 
 def test_ssd_jvp_matches_reference_gpu():

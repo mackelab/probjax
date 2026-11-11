@@ -63,6 +63,8 @@ def test_solver_drift_matches_probability_flow_including_endpoints(cls, solver_c
         )
 
 
+# Eager vs jit: under TF32 the two can pick different matmul algorithms (~1e-3).
+@pytest.mark.float32_matmul
 @pytest.mark.parametrize('architecture', ['mlp', 'transformer'])
 def test_time_vector_broadcast_matches_explicit_column(architecture):
     from probjax.nn import DiffusionTransformer, TimeMLP

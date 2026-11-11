@@ -74,6 +74,12 @@ TOL = {jnp.float32: 2e-3, jnp.bfloat16: 3e-2}
 def test_triton_matches_ragged_dot(dtype, rows, kind):
     if rows == 262_144 and kind != "random":
         pytest.skip("largest size only for the random layout (time)")
+    # The ragged_dot reference lowers densely over all experts on GPU (about
+    # 3.3 GiB per buffer at 65k rows, ~160 KiB per row at peak); the Triton
+    # path itself needs ~1 GiB.
+    limit = (jax.devices()[0].memory_stats() or {}).get("bytes_limit", 0)
+    if limit and limit < rows * 160 * 1024:
+        pytest.skip(f"ragged_dot reference needs a larger GPU ({limit / 2**30:.0f} GiB)")
     experts = _experts(dtype)
     x = jax.random.normal(jax.random.key(1), (rows, D), jnp.float32).astype(dtype)
     sizes = _sizes(kind, rows, jax.random.key(2))
