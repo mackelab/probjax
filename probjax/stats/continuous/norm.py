@@ -20,7 +20,6 @@ from probjax.stats.utils import (
     mean_and_var_1d,
     normalize_sample_weights,
 )
-from probjax.utils.jaxutils import where
 from probjax.utils.typing import Array, ArrayLike, RngKey
 
 __all__ = ["norm"]
@@ -136,38 +135,19 @@ class norm_gen(rv_continuous, rv_exponential_family):
         cls, n: int, loc: ArrayLike = 0.0, scale: ArrayLike = 1.0, **kwargs: Any
     ) -> ArrayLike:
         """n-th non-central moment of the normal distribution."""
-        # Use Hermite polynomials to compute moments efficiently
+        # Binomial expansion of E[(loc + scale * Z)^n] with Z standard normal:
+        # only even powers of Z contribute, E[Z^(2j)] = (2j - 1)!!.
+        loc = jnp.asarray(loc)
+        scale = jnp.asarray(scale)
         if n == 0:
             return jnp.ones_like(loc)
-        elif n == 1:
-            return jnp.asarray(loc)
-        elif n == 2:
-            return loc**2 + scale**2
-        else:
-            # Recursive formula for higher moments
-            def hermite_polynomial(n, x):
-                if n == 0:
-                    return jnp.ones_like(x)
-                elif n == 1:
-                    return x
-                else:
-                    return x * hermite_polynomial(n - 1, x) - (
-                        n - 1
-                    ) * hermite_polynomial(n - 2, x)
-
-            # Expected value of Hermite polynomial with normal distribution
-            # For standard normal (0, 1), E[H_n(X)] = 0 if n is odd, and n! if n is even
-            # For non-standard normal, transform using E[(X-μ)/σ]
-            standardized_moment = where(
-                n % 2 == 0, jnp.prod(jnp.arange(1, n + 1, 2)), 0.0
-            )
-
-            return jnp.sum(
-                jnp.array([
-                    math.comb(n, k) * loc ** (n - k) * scale**k * standardized_moment
-                    for k in range(n + 1)
-                ])
-            )
+        terms = []
+        for k in range(0, n + 1, 2):
+            double_factorial = 1.0
+            for m in range(1, k, 2):
+                double_factorial *= m
+            terms.append(math.comb(n, k) * loc ** (n - k) * scale**k * double_factorial)
+        return jnp.sum(jnp.array(terms))
 
     @classmethod
     def skew(

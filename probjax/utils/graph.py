@@ -7,53 +7,33 @@ import networkx as nx
 
 @jax.jit
 def find_ancestors_jax(mask, node):
-    """Find ancestors of a node in a graph.
+    """Find the ancestors of a node in a directed graph.
+
+    The adjacency convention is ``mask[parent, child]`` (rows are parents,
+    columns are children, as :func:`faithfull_mask` documents). A node is an
+    ancestor when a directed path of one or more edges leads from it to
+    ``node``; ``node`` itself is never reported.
 
     Args:
         mask (Array): Adjacency matrix of a directed graph.
         node (int): Node of interest.
 
     Returns:
-        _type_: _description_
+        Array: Boolean vector marking every ancestor of ``node``.
     """
+    mask = jnp.asarray(mask).astype(jnp.bool_)
     num_nodes = mask.shape[0]
-    is_ancestor = jnp.zeros(num_nodes, dtype=jnp.bool_)
-    stack = jnp.empty(num_nodes, dtype=jnp.int32)
-    stack = stack.at[0].set(node)
+    # Direct parents of ``node`` are the rows whose ``node`` column is set.
+    reached = mask[:, node]
 
-    def body_fn(carry, i):
-        is_ancestor, stack = carry
-        current_node = stack[i]
-        current_parents = mask[current_node, :]
+    def expand(_, reached):
+        # A node reaches ``node`` if any of its children already does.
+        return reached | jnp.any(mask & reached[None, :], axis=1)
 
-        def inner_body_fn(carry, j):
-            is_ancestor, stack = carry
-            value = current_parents[j]
-            cond = value & (j != current_node) & (~is_ancestor[j])
-
-            def true_fn(is_ancestor, stack):
-                is_ancestor = is_ancestor.at[j].set(True)
-                stack = stack.at[i + 1].set(j)
-                return is_ancestor, stack
-
-            def false_fn(is_ancestor, stack):
-                return is_ancestor, stack
-
-            is_ancestor, stack = jax.lax.cond(
-                cond, true_fn, false_fn, is_ancestor, stack
-            )
-            return (is_ancestor, stack), None
-
-        (is_ancestor, stack), _ = jax.lax.scan(
-            inner_body_fn, (is_ancestor, stack), jnp.arange(num_nodes)
-        )
-        return (is_ancestor, stack), None
-
-    (is_ancestor, stack), _ = jax.lax.scan(
-        body_fn, (is_ancestor, stack), jnp.arange(num_nodes)
-    )
-
-    return is_ancestor
+    # Every path has at most ``num_nodes - 1`` edges, so this reaches a fixed
+    # point; iterating to convergence would cost the same in the worst case.
+    reached = jax.lax.fori_loop(0, max(num_nodes - 1, 0), expand, reached)
+    return reached.at[node].set(False)
 
 
 @partial(jax.jit, static_argnums=(2,))

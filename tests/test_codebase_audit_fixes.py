@@ -271,12 +271,12 @@ def test_flash3_backend_adapters(monkeypatch):
     monkeypatch.setattr(flash, '_attention_backward_impl', backward)
     for pipeline in [False, True]:
         assert (
-            flash._flash_fwd_impl(1, 2, 3, config=4, use_pipeline_emitter=pipeline) == 5
+            flash._flash_fwd_impl(1, 2, 3, None, config=4, use_pipeline_emitter=pipeline) == 5
         )
         assert flash._flash_fwd_res_impl(
-            1, 2, 3, config=4, use_pipeline_emitter=pipeline
+            1, 2, 3, None, config=4, use_pipeline_emitter=pipeline
         ) == (5, 6)
-    assert flash._flash_bwd_impl(7, 1, 2, 3, 5, 6, config=4) == (8, 9, 10)
+    assert flash._flash_bwd_impl(7, 1, 2, 3, 5, 6, None, config=4) == (8, 9, 10)
 
 
 def test_transformer_distinct_reproducible_dropout_keys():

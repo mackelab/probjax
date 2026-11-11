@@ -49,5 +49,11 @@ def log_ess(log_weights: Array) -> Array:
         The logarithm of the effective sample size.
     """
     # ESS is invariant to a common offset; remove it before subtracting log sums.
-    log_weights = log_weights - jax.lax.stop_gradient(jnp.max(log_weights))
-    return 2 * logsumexp(log_weights) - logsumexp(2 * log_weights)
+    # When every weight is -inf the max is -inf and the difference is NaN, so
+    # clamp the offset with nansum-safe masking: no mass means ESS is zero.
+    max_log_weight = jax.lax.stop_gradient(jnp.max(log_weights))
+    finite = jnp.isfinite(max_log_weight)
+    offset = jnp.where(finite, max_log_weight, 0.0)
+    log_weights = log_weights - offset
+    log_ess_value = 2 * logsumexp(log_weights) - logsumexp(2 * log_weights)
+    return jnp.where(finite, log_ess_value, -jnp.inf)

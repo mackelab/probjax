@@ -129,7 +129,10 @@ class empirical(rv_discrete):
             weights = _default_weights(values, weights)
         weights = jnp.asarray(weights)
         values = jnp.asarray(values)
-        idx = random.categorical(rng, weights, shape=shape)
+        # random.categorical expects logits; passing probabilities straight in
+        # would silently draw from softmax(weights).
+        logits = jnp.log(jnp.clip(weights, jnp.finfo(weights.dtype).tiny))
+        idx = random.categorical(rng, logits, shape=shape)
         return values[idx]
 
     @classmethod
