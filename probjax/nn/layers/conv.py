@@ -11,7 +11,7 @@ from probjax.nn.layers.attention import MultiHeadAttention
 from probjax.nn.layers.encoding import PosEncode, RotaryPosEncode
 from probjax.nn.layers.fuse import AffineFuse, GatedFuse
 from probjax.nn.layers.reg import DropPath
-from probjax.nn.sharding import replicate
+from probjax.nn.sharding import replicate_except_batch
 from probjax.nn.utils import (
     cast_output,
     filter_precision_kwargs,
@@ -556,8 +556,9 @@ class SpatialSelfAttention(nnx.Module):
         stochastic depth is controlled independently via `drop_path_rate`.
         """
         x = jnp.asarray(x)
-        # Spatial self-attention requires gathered (unsharded) inputs.
-        x = replicate(x)
+        # Spatial self-attention mixes all positions: gather the spatial and
+        # channel dims, but keep the batch sharded (images are independent).
+        x = replicate_except_batch(x, event_ndim=self.num_spatial_dims + 1)
         b = x.shape[: -self.num_spatial_dims - 1]
         spatial_dims = x.shape[-self.num_spatial_dims - 1 : -1]
         seq_len = math.prod(spatial_dims)
