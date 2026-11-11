@@ -48,7 +48,7 @@ from jax.sharding import NamedSharding
 from jax.sharding import PartitionSpec
 
 from probjax.nn import GaussianFourierEmbedding, GatedFuse, LearnablePosEncode, Transformer
-from probjax.nn.io_util import DataLoader, chunkify, unchunkify
+from probjax.nn.data import DataLoader, chunkify, unchunkify
 from probjax.nn.layers.attention import flex_attention
 from probjax.nn.generative.diffusion import EDM
 

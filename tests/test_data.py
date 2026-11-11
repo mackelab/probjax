@@ -1,13 +1,15 @@
+import gc
 import threading
 import time
+import weakref
 
 import jax
 import numpy as np
 import pytest
 from jax.sharding import PartitionSpec as P
 
-import probjax.nn.io_util as io_util
 from probjax.nn import DataLoader
+from probjax.nn.data import compose, datasets, prefetch
 
 
 def _sharding_spec_of(array):
@@ -134,7 +136,7 @@ def test_dataloader_mesh_sharding_keeps_batches_host_local_in_worker():
         batch_spec=P("data"),
     )
     try:
-        batch = loader._process_batch(np.array([0, 1]))
+        batch = loader._producer._process_batch(np.array([0, 1]))
     finally:
         loader.close()
 
@@ -158,14 +160,14 @@ def test_prefetch_sharding_uses_host_local_array_to_global_array(monkeypatch):
         return x
 
     monkeypatch.setattr(
-        io_util.multihost_utils,
+        prefetch.multihost_utils,
         "host_local_array_to_global_array",
         fake_host_local_array_to_global_array,
     )
-    monkeypatch.setattr(io_util.jax, "device_put", fail_device_put)
+    monkeypatch.setattr(prefetch.jax, "device_put", fail_device_put)
 
     out = next(
-        io_util._prefetch_sharding(
+        prefetch._prefetch_sharding(
             iter([{"x": np.arange(4, dtype=np.int32).reshape(2, 2)}]),
             1,
             sharding,
@@ -189,13 +191,13 @@ def test_prefetch_sharding_serves_ready_batches(monkeypatch):
         return x
 
     monkeypatch.setattr(
-        io_util.multihost_utils,
+        prefetch.multihost_utils,
         "host_local_array_to_global_array",
         fake_host_local_array_to_global_array,
     )
-    monkeypatch.setattr(io_util.jax, "block_until_ready", fake_block_until_ready)
+    monkeypatch.setattr(prefetch.jax, "block_until_ready", fake_block_until_ready)
 
-    it = io_util._prefetch_sharding(
+    it = prefetch._prefetch_sharding(
         iter([
             {"x": np.array([[0, 1]], dtype=np.int32)},
             {"x": np.array([[2, 3]], dtype=np.int32)},
@@ -236,13 +238,13 @@ def test_prefetch_sharding_recycles_ready_batches_when_worker_lags(monkeypatch):
         return x
 
     monkeypatch.setattr(
-        io_util.multihost_utils,
+        prefetch.multihost_utils,
         "host_local_array_to_global_array",
         fake_host_local_array_to_global_array,
     )
-    monkeypatch.setattr(io_util.jax, "block_until_ready", fake_block_until_ready)
+    monkeypatch.setattr(prefetch.jax, "block_until_ready", fake_block_until_ready)
 
-    it = io_util._prefetch_sharding(
+    it = prefetch._prefetch_sharding(
         iter([
             {"x": np.array([[0, 1]], dtype=np.int32)},
             {"x": np.array([[2, 3]], dtype=np.int32)},
@@ -376,7 +378,7 @@ def test_simulation_dataset_producer_failure_raises_with_cause():
             raise ValueError("boom from simulator")
         return {"x": jax.numpy.ones((2,))}
 
-    ds = io_util.SimulationDataset(
+    ds = datasets.SimulationDataset(
         flaky_simulator,
         simulation_batch_size=4,
         rng=jax.random.PRNGKey(0),
@@ -405,7 +407,7 @@ def test_simulation_dataset_recovers_after_reset():
             raise ValueError("boom from simulator")
         return {"x": jax.numpy.ones((2,))}
 
-    ds = io_util.SimulationDataset(
+    ds = datasets.SimulationDataset(
         flaky_simulator,
         simulation_batch_size=4,
         rng=jax.random.PRNGKey(0),
@@ -448,9 +450,7 @@ def test_dataloader_host_transform_failure_raises_promptly():
         max_in_flight=2,
     ) as loader:
         it = iter(loader)
-        with pytest.raises(
-            RuntimeError, match="DataLoader worker failed"
-        ) as exc_info:
+        with pytest.raises(RuntimeError, match="DataLoader worker failed") as exc_info:
             for _ in range(20000):
                 next(it)
     assert isinstance(exc_info.value.__cause__, ValueError)
@@ -483,7 +483,7 @@ def test_async_prefetch_iterator_surfaces_worker_error():
             raise ValueError("boom in put_fn")
         return x
 
-    it = io_util._AsyncPrefetchIterator(
+    it = prefetch._AsyncPrefetchIterator(
         iter([1, 2, 3, 4]), 1, flaky_put, queue_size=4, min_fill=0.5
     )
     try:
@@ -495,3 +495,272 @@ def test_async_prefetch_iterator_surfaces_worker_error():
     finally:
         it.close()
     assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+def test_compose_applies_transforms_left_to_right():
+    f = compose(lambda x: x + 1, lambda x: x * 10)
+    assert f(1) == 20
+
+
+def test_compose_accepts_sequences_and_none():
+    assert compose([lambda x: x + 1, lambda x: x * 10])(1) == 20
+    assert compose(None)(5) == 5
+    assert compose()(5) == 5
+
+
+def test_dataloader_host_transforms_list_applies_in_order():
+    with DataLoader(
+        _IndexDataset(n_samples=4),
+        batch_size=4,
+        shuffle=False,
+        loop=False,
+        host_transforms=[lambda x: x + 1, lambda x: x * 10],
+        num_prefetch_host=1,
+        num_prefetch_device=1,
+    ) as loader:
+        (batch,) = list(loader)
+    np.testing.assert_array_equal(np.asarray(batch), [10, 20, 30, 40])
+
+
+# ----------------------- regression tests (review fixes) ----------------------- #
+
+
+class _SlowDataset(_IndexDataset):
+    def __init__(self, n_samples=8, delay=0.02):
+        super().__init__(n_samples)
+        self._delay = delay
+
+    def __getitem__(self, idxs):
+        time.sleep(self._delay)
+        return super().__getitem__(idxs)
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        gc.collect()
+        time.sleep(0.02)
+    return predicate()
+
+
+def _thread_count():
+    return threading.active_count()
+
+
+def test_dataloader_loop_false_slow_dataset_default_prefetch_exact_epoch():
+    """Recycling must not duplicate batches of a finite epoch."""
+    with DataLoader(
+        _SlowDataset(n_samples=16, delay=0.05), batch_size=4, shuffle=False, loop=False
+    ) as loader:
+        batches = [np.asarray(b) for b in loader]
+    assert len(batches) == 4
+    for i, b in enumerate(batches):
+        np.testing.assert_array_equal(b, np.arange(4 * i, 4 * i + 4))
+
+
+def test_dataloader_loop_false_sharding_path_exact_epoch():
+    sharding = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    with DataLoader(
+        _SlowDataset(n_samples=16, delay=0.05),
+        batch_size=4,
+        shuffle=False,
+        loop=False,
+        sharding=sharding,
+    ) as loader:
+        batches = [np.asarray(b) for b in loader]
+    assert len(batches) == 4
+    for i, b in enumerate(batches):
+        np.testing.assert_array_equal(b, np.arange(4 * i, 4 * i + 4))
+
+
+def test_dataloader_loop_true_still_recycles_on_host_queue():
+    loader = DataLoader(
+        _SlowDataset(n_samples=8, delay=0.05),
+        batch_size=4,
+        shuffle=False,
+        loop=True,
+        num_prefetch_host=8,
+    )
+    try:
+        it = iter(loader)
+        # 8 batches in well under the time the slow dataset needs to produce
+        # them: only possible if served batches are recycled.
+        start = time.monotonic()
+        for _ in range(8):
+            next(it)
+        assert time.monotonic() - start < 0.3
+    finally:
+        loader.close()
+
+
+@pytest.mark.parametrize("use_sharding", [False, True])
+def test_dropped_dataloader_releases_threads(use_sharding):
+    kwargs = {}
+    if use_sharding:
+        kwargs["sharding"] = jax.sharding.SingleDeviceSharding(jax.devices()[0])
+    baseline = _thread_count()
+    refs = []
+    for _ in range(3):
+        dl = DataLoader(_SlowDataset(n_samples=32), batch_size=4, **kwargs)
+        next(iter(dl))
+        refs.append(weakref.ref(dl))
+        del dl
+        gc.collect()
+    assert _wait_for(lambda: all(r() is None for r in refs)), "loader leaked"
+    assert _wait_for(lambda: _thread_count() <= baseline), (
+        f"threads leaked: {_thread_count()} > {baseline}"
+    )
+
+
+def test_dropped_simulation_dataset_releases_thread():
+    def sim(key):
+        return {"x": jax.random.normal(key, (2,))}
+
+    baseline = _thread_count()
+    refs = []
+    for _ in range(3):
+        ds = datasets.SimulationDataset(
+            sim, simulation_batch_size=4, rng=jax.random.PRNGKey(0), buffer_size=8
+        )
+        ds[np.arange(4)]
+        refs.append(weakref.ref(ds))
+        del ds
+        gc.collect()
+    assert _wait_for(lambda: all(r() is None for r in refs)), "dataset leaked"
+    assert _wait_for(lambda: _thread_count() <= baseline)
+
+
+def test_async_prefetch_iterator_dropped_stops_thread():
+    baseline = _thread_count()
+    it = prefetch._AsyncPrefetchIterator(iter(range(10**9)), 1, lambda x: x)
+    next(it)
+    ref = weakref.ref(it)
+    del it
+    gc.collect()
+    assert _wait_for(lambda: ref() is None)
+    assert _wait_for(lambda: _thread_count() <= baseline)
+
+
+def test_async_prefetch_iterator_next_after_exhaustion_or_close_stops():
+    it = prefetch._AsyncPrefetchIterator(iter([1, 2]), 1, lambda x: x, queue_size=4)
+    assert list(it) == [1, 2]
+    for _ in range(3):
+        with pytest.raises(StopIteration):
+            next(it)
+    it2 = prefetch._AsyncPrefetchIterator(iter(range(100)), 1, lambda x: x)
+    it2.close()
+    with pytest.raises(StopIteration):
+        next(it2)
+
+
+def _gated_simulator():
+    """Simulator that blocks producer threads (not the main thread) on a
+    per-call event, to hold a producer mid-batch deterministically."""
+    entered, events = [], [threading.Event() for _ in range(8)]
+
+    def sim(key):
+        if threading.current_thread() is not threading.main_thread():
+            idx = len(entered)
+            entered.append(threading.current_thread())
+            events[idx].wait(10)
+        return {"x": jax.random.normal(key, (2,))}
+
+    return sim, entered, events
+
+
+def test_simulation_dataset_reset_stale_producer_cannot_write_or_clobber_seed():
+    sim, entered, events = _gated_simulator()
+    ref_sim, _, ref_events = _gated_simulator()
+    ds = ref = None
+    try:
+        ref = datasets.SimulationDataset(
+            ref_sim,
+            simulation_batch_size=4,
+            rng=jax.random.PRNGKey(7),
+            buffer_size=4,
+            jit_simulator=False,
+        )
+        ds = datasets.SimulationDataset(
+            sim,
+            simulation_batch_size=4,
+            rng=jax.random.PRNGKey(0),
+            buffer_size=4,
+            jit_simulator=False,
+        )
+        assert _wait_for(lambda: len(entered) == 1)  # producer mid-simulation
+        ds.reset(seed=7)  # joins for 1s, then abandons the stuck producer
+        assert _wait_for(lambda: len(entered) == 2)  # new producer mid-batch
+        stale = entered[0]
+        np.testing.assert_array_equal(
+            ds._buffer["x"], ref._buffer["x"]
+        )  # same first contents as a fresh dataset with that seed
+        before = ds._buffer["x"].copy()
+        produced = ds.get_stats()["batches_produced"]
+        events[0].set()  # let the stale producer finish
+        stale.join(timeout=5)
+        assert not stale.is_alive()
+        np.testing.assert_array_equal(ds._buffer["x"], before)
+        assert ds.get_stats()["batches_produced"] == produced
+    finally:
+        for e in events + ref_events:
+            e.set()
+        for d in (ds, ref):
+            if d is not None:
+                d.close()
+
+
+def test_simulation_dataset_mark_batch_served_counts():
+    ds = datasets.SimulationDataset(
+        lambda key: {"x": jax.random.normal(key, (2,))},
+        simulation_batch_size=4,
+        rng=jax.random.PRNGKey(0),
+        buffer_size=8,
+    )
+    try:
+        ds.mark_batch_served(4)
+        ds.mark_batch_served(3)
+        stats = ds.get_stats()
+        assert stats["batches_consumed"] == 2
+        assert stats["samples_served"] == 7
+        ds.set_data({"x": np.zeros((8, 2), np.float32)})
+        assert ds.get_stats()["batches_consumed"] == 0
+        ds.mark_batch_served(1)
+        assert ds.get_stats()["samples_served"] == 1
+    finally:
+        ds.close()
+
+
+def test_simulation_dataset_set_data_is_static_by_default():
+    ds = datasets.SimulationDataset(
+        lambda key: {"x": jax.random.normal(key, (2,))},
+        simulation_batch_size=4,
+        rng=jax.random.PRNGKey(0),
+        buffer_size=8,
+    )
+    try:
+        data = {"x": np.arange(16, dtype=np.float32).reshape(8, 2)}
+        ds.set_data(data)
+        for _ in range(20):
+            ds[np.arange(4)]
+            time.sleep(0.005)
+        np.testing.assert_array_equal(ds[np.arange(8)]["x"], data["x"])
+        ds.set_data(data, start_producer=True)
+        assert ds._producer is not None and ds._producer.is_alive()
+    finally:
+        ds.close()
+
+
+def test_dataloader_close_does_not_record_spurious_worker_error():
+    loader = DataLoader(
+        _SlowDataset(n_samples=64, delay=0.01),
+        batch_size=4,
+        num_async_workers=2,
+        max_in_flight=4,
+    )
+    next(iter(loader))
+    producer = loader._producer
+    loader.close()
+    time.sleep(0.3)
+    assert producer._get_worker_error() is None
