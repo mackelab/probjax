@@ -53,6 +53,7 @@ from flax.nnx.nn.activations import (
     tanh,
 )
 
+from probjax.nn.data import DataLoader, chunkify
 from probjax.nn.generative import (
     EDM,
     VE,
@@ -169,7 +170,6 @@ from probjax.nn.generative.nflows import (
     sospf,
     unaf,
 )
-from probjax.nn.io_util import DataLoader, chunkify
 from probjax.nn.layers import (
     AdditiveBinaryFuse,
     AdditiveFuse,

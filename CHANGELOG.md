@@ -193,6 +193,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- **Breaking:** `nn.io_util` moved to the `nn.data` package (`dataloader`,
+  `datasets`, `prefetch`, `transforms`) and `probjax.nn.io_util` is removed;
+  import from `probjax.nn.data` (`probjax.nn.DataLoader` and
+  `probjax.nn.chunkify` still work). New `nn.data.compose` helper chains
+  transforms left to right
 - **Breaking:** `max_steps` is `num_steps`, `callback_every` is `every`, and a
   single `callback(state, info)` replaces `FitCallback`. Losses passed to `fit`
   receive the whole batch, `loss_fn(params, rng, batch)`; a list, generator or
@@ -728,6 +733,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - SDE integration of plain-callable drifts now routes through
   `RaveledDrift`, so non-`Drift` pytrees keep array leaves as explicit
   differentiable pytree children on the SDE side, matching the ODE side
+- `DataLoader(loop=False)` served far more than one epoch with slow datasets:
+  the queue-refill recycling re-queued served batches on the host queue and in
+  the sharded device prefetch. Recycling now applies to `loop=True` only
+- Dropped `DataLoader`, `SimulationDataset` and device-prefetch iterators were
+  never collected, because their background threads held them; threads now
+  hold no reference to the owner, so dropping it stops them. A finished or
+  closed prefetch iterator raises `StopIteration` instead of blocking, and its
+  queue polls at 50 ms instead of 0.5 ms. `close()` no longer records a
+  spurious worker error from the shut-down executor
+- `SimulationDataset.reset` / `set_data` could leave two producers running
+  and a stale one overwrite the buffer or the requested seed; each producer
+  now has its own stop event and a stale producer discards its batch
+- `SimulationDataset.mark_batch_served` raised `KeyError`; `set_data` took no
+  `start_producer` despite documenting it and always restarted the producer,
+  which then overwrote the user's data. It is now `start_producer=False`
 
 ### Compatibility and validation
 
