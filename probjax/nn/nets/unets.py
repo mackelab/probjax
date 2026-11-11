@@ -63,7 +63,9 @@ class UNet(nnx.Module):
         [num_stages]              Middle block 1
         [num_stages+1]            Middle block 2
         [num_stages+2 .. end]     Up path ResNet blocks (from bottom to top)
-    If a sequence is provided, it overrides the uniform rate.
+    If a sequence is provided, it overrides the uniform rate. Each attention
+    block uses the rate of the ResNet block it follows (the middle attention
+    block uses middle block 2's rate).
     """
 
     resnet_block_cls = ResnetBlock
@@ -232,7 +234,7 @@ class UNet(nnx.Module):
             if self.attn_mask[i]:
                 self.att_layers_down.append(
                     _attn_block(
-                        self.out_features[i], drop_path_rate=dpr_list[layer_idx]
+                        self.out_features[i], drop_path_rate=dpr_list[layer_idx - 1]
                     )
                 )
             else:
@@ -257,7 +259,7 @@ class UNet(nnx.Module):
         )
         layer_idx += 1
         self.att_middle = (
-            _attn_block(top_ch, drop_path_rate=dpr_list[layer_idx])
+            _attn_block(top_ch, drop_path_rate=dpr_list[layer_idx - 1])
             if self.attn_mask[-1]
             else None
         )
@@ -278,10 +280,11 @@ class UNet(nnx.Module):
             )
             layer_idx += 1
 
-            # Attention layer (mirroring down path)
-            if self.attn_mask[self.num_stages - i - 1]:
+            # Attention layer, mirroring the down path at the same resolution
+            # (stage i); it shares the preceding ResNet block's drop-path rate.
+            if self.attn_mask[i]:
                 self.att_layers_up.append(
-                    _attn_block(ch, drop_path_rate=dpr_list[layer_idx])
+                    _attn_block(ch, drop_path_rate=dpr_list[layer_idx - 1])
                 )
             else:
                 self.att_layers_up.append(None)

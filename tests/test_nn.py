@@ -947,6 +947,40 @@ def test_unet_builds_for_1d_and_2d(spatial_ndim, kernel_size, input_shape):
     assert out.shape == input_shape
 
 
+@pytest.mark.parametrize(
+    "use_attention",
+    [True, [True, False], [False, True], [True, False, True], [False, False, True]],
+)
+def test_unet_attention_mirrors_down_path(use_attention):
+    """Up-path attention sits at the same resolution as on the down path.
+
+    Regression: ``use_attention=True`` (and any mask enabling attention at
+    the top stage) raised IndexError in the drop-path list, and per-stage
+    masks were applied to the up path in reverse (attention at the wrong
+    resolution).
+    """
+    from probjax.nn.nets import UNet
+
+    num_stages = 3 if isinstance(use_attention, list) and len(use_attention) == 3 else 2
+    unet = UNet(
+        2,
+        [32, 64, 64][:num_stages],
+        kernel_size=(4, 4),
+        strides=(2, 2),
+        kernel_size_resnet=(3, 3),
+        strides_resnet=(1, 1),
+        use_attention=use_attention,
+        drop_path_rate=0.1,
+        rngs=nnx.Rngs(0),
+    )
+    down = [layer is not None for layer in unet.att_layers_down]
+    # att_layers_up runs from the bottom (stage num_stages - 1) to the top.
+    up_by_stage = [layer is not None for layer in unet.att_layers_up][::-1]
+    assert up_by_stage == down
+    x = jnp.ones((2, 8, 8, 2))
+    assert unet(x).shape == x.shape
+
+
 @pytest.mark.parametrize("shape", [(1, 4, 6), (1, 1, 4, 6), (1, 1, 1, 6, 4)])
 def test_identity_1x1_is_rank_agnostic(shape):
     from probjax.nn.utils import identity_1x1

@@ -6,7 +6,7 @@ import jax.numpy as jnp
 
 from probjax.nn.pallas_kernels import compute_mamba_scan
 from probjax.nn.pallas_kernels import ssd as pallas_ssd
-from probjax.nn.sharding import BATCH, constrain, replicate
+from probjax.nn.sharding import BATCH, constrain, replicate_except_batch
 from probjax.nn.utils import (
     filter_precision_kwargs,
 )
@@ -173,8 +173,9 @@ class LRUCell(RecurrentCell):
     def __call__(self, inputs: jax.Array, *, rng: jax.Array | None = None) -> jax.Array:
         del rng
         inputs = jnp.asarray(inputs)
-        # The recurrence requires gathered (unsharded) inputs.
-        inputs = replicate(inputs)
+        # The recurrence runs over time: gather time and features, but keep
+        # the batch sharded (each sequence is independent).
+        inputs = replicate_except_batch(inputs, event_ndim=2)
 
         nu_log = self.nu_log[...]
         theta_log = self.theta_log[...]

@@ -568,6 +568,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `probjax.utils.guards.ensure_array`/`as_concrete_bool`
 
 ### Fixed
+- `UNet(use_attention=True)`, and any per-stage mask enabling attention at
+  the top stage, raised `IndexError` building the drop-path list; per-stage
+  masks were applied to the up path in reverse, so decoder attention ran at
+  the wrong resolution. The up path now mirrors the down path, and attention
+  blocks share the drop-path rate of the ResNet block they follow
+- Under data parallelism, `SSMModel`/LRU layers and `UNet` spatial attention
+  gathered the whole batch onto every device (`replicate`) and computed it
+  redundantly: no speedup from a second device and an activation all-gather
+  per layer. They now gather only the time / spatial dims and keep the batch
+  sharded (new `probjax.nn.sharding.replicate_except_batch`); on two RTX 3080s
+  an SSMModel training step goes from 0.98x to 1.57x the single-GPU speed
 - `frozen.interval()` works for distributions with an `alpha` parameter
   (`gamma`, `beta`); the confidence argument no longer collides with the
   distribution parameter

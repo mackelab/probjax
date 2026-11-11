@@ -287,3 +287,131 @@ def test_flow_logpdf_per_shard_no_allgather():
         assert lp.sharding.spec[0] == "data"
         hlo = fn.lower(xs).compile().as_text()
         assert "all-gather" not in hlo
+
+
+# ---------------------------------------------------------------------------
+# Collectives of full training steps (value_and_grad) on a 2-device mesh.
+# ---------------------------------------------------------------------------
+
+
+def _collective_counts(hlo):
+    import re
+
+    ops = re.findall(
+        r"\s(all-reduce|all-gather|reduce-scatter|all-to-all|collective-permute)"
+        r"(?:-start)?\(",
+        hlo,
+    )
+    return {op: ops.count(op) for op in set(ops)}
+
+
+def _train_step_hlo(make_model, x, x_spec, mesh):
+    def loss(model, x):
+        return jnp.mean(model(x) ** 2)
+
+    with jax.set_mesh(mesh):
+        graphdef, state = nnx.split(make_model())
+        xs = jax.device_put(x, NamedSharding(mesh, x_spec))
+
+        def step(state, x):
+            return nnx.value_and_grad(loss)(nnx.merge(graphdef, state), x)
+
+        jitted = jax.jit(step)
+        hlo = jitted.lower(state, xs).compile().as_text()
+        value, grads = jitted(state, xs)
+    reference_value, reference_grads = nnx.value_and_grad(loss)(make_model(), x)
+    assert jnp.allclose(value, reference_value, rtol=1e-4)
+    for actual, expected in zip(
+        jax.tree.leaves(grads), jax.tree.leaves(reference_grads), strict=True
+    ):
+        assert jnp.allclose(jax.device_get(actual), expected, rtol=1e-2, atol=1e-4)
+    return hlo
+
+
+@pytest.mark.mesh
+def test_ssm_data_parallel_step_keeps_batch_sharded():
+    # The LRU recurrence runs over time only; the batch stays sharded, so the
+    # step needs just the gradient all-reduce (no activation all-gathers).
+    mesh = _auto_mesh((2, 1))
+    x = jax.random.normal(jax.random.key(0), (4, 16, 4))
+    hlo = _train_step_hlo(
+        lambda: SSMModel(
+            input_dim=4, model_dim=8, output_dim=4, num_layers=2, rngs=nnx.Rngs(0)
+        ),
+        x,
+        P("data"),
+        mesh,
+    )
+    assert "all-gather" not in _collective_counts(hlo)
+
+
+@pytest.mark.mesh
+def test_unet_attention_data_parallel_step_keeps_batch_sharded():
+    mesh = _auto_mesh((2, 1))
+    x = jax.random.normal(jax.random.key(0), (4, 8, 8, 4))
+    hlo = _train_step_hlo(
+        lambda: UNet(
+            4,
+            [32, 32],
+            rngs=nnx.Rngs(0),
+            kernel_size=(4, 4),
+            strides=(2, 2),
+            kernel_size_resnet=(3, 3),
+            strides_resnet=(1, 1),
+            use_attention=True,
+        ),
+        x,
+        P("data"),
+        mesh,
+    )
+    assert "all-gather" not in _collective_counts(hlo)
+
+
+@pytest.mark.mesh
+def test_replicate_except_batch_falls_back_for_indivisible_batch():
+    mesh = _auto_mesh((2, 1))
+    with jax.set_mesh(mesh):
+        x = jnp.ones((3, 4, 5))
+        y = jax.jit(lambda v: shd.replicate_except_batch(v, event_ndim=2))(x)
+        assert y.sharding.spec in (P(), P(None, None, None))
+        unbatched = jax.jit(lambda v: shd.replicate_except_batch(v, event_ndim=2))(
+            jnp.ones((4, 5))
+        )
+        assert unbatched.shape == (4, 5)
+
+
+@pytest.mark.mesh
+@pytest.mark.parametrize("implementation", ["xla", "pallas", None])
+@pytest.mark.parametrize("parallelism", ["data", "tensor"])
+def test_transformer_step_collectives(implementation, parallelism):
+    """Data parallel: one gradient all-reduce. Tensor parallel (heads/hidden
+    sharded, every attention backend): the Megatron all-reduces only."""
+    import functools
+
+    from probjax.nn.layers.attention import dot_product_attention
+
+    if implementation == "pallas" and jax.default_backend() != "gpu":
+        pytest.skip("Pallas attention needs a GPU")
+    mesh = _auto_mesh((2, 1) if parallelism == "data" else (1, 2))
+    attention_fn = functools.partial(
+        dot_product_attention, implementation=implementation
+    )
+    num_layers = 2
+    x = jax.random.normal(jax.random.key(0), (4, 32, 16))
+    hlo = _train_step_hlo(
+        lambda: Transformer(
+            model_dim=16,
+            num_heads=4,
+            num_layers=num_layers,
+            attn_size=4,
+            attention_fn=attention_fn,
+            rngs=nnx.Rngs(0),
+        ),
+        x,
+        P("data") if parallelism == "data" else P(),
+        mesh,
+    )
+    counts = _collective_counts(hlo)
+    assert set(counts) <= {"all-reduce"}, counts
+    if parallelism == "tensor":
+        assert counts["all-reduce"] <= 4 * num_layers + 1, counts

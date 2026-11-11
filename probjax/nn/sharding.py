@@ -34,9 +34,11 @@ Without an active mesh everything here is a no-op: ``param_metadata``
 returns ``{}`` (variables carry no sharding annotation, avoiding flax's
 always-shard error on single devices) and ``constrain`` returns its input.
 
-Note: combining head-sharded attention parameters with the pallas attention
-kernels is unvalidated; use the default (non-pallas) attention path under
-model parallelism.
+Head-sharded attention parameters work with every attention backend
+(``dot_product_attention`` with ``implementation=None``, ``"xla"`` or
+``"pallas"``): the attention kernels run per head shard, and a tensor-parallel
+Transformer step needs only the Megatron all-reduces (two per layer forward,
+two backward). ``tests/test_nn_mesh.py`` checks the collectives.
 """
 
 from __future__ import annotations
@@ -63,6 +65,7 @@ __all__ = [
     "param_metadata",
     "constrain",
     "replicate",
+    "replicate_except_batch",
 ]
 
 # Canonical logical axis names.
@@ -178,6 +181,31 @@ def replicate(x: jax.Array) -> jax.Array:
     if _active_mesh() is None or in_per_shard_body() or _is_vmap_batched(x):
         return x
     return _apply_spec(x, PartitionSpec(*(None,) * x.ndim))
+
+
+def replicate_except_batch(x: jax.Array, event_ndim: int) -> jax.Array:
+    """Gather every dimension of ``x`` except a leading batch axis.
+
+    For modules that need their trailing *event_ndim* dimensions unsharded
+    (a recurrence over time, attention over spatial positions) but are
+    independent across the batch. The leading axis keeps the ``BATCH``
+    sharding when ``x`` has one beyond the event dims and its size divides
+    over the mapped mesh axis; otherwise ``x`` is fully replicated like
+    :func:`replicate`. No-op without an active mesh.
+    """
+    if _active_mesh() is None or in_per_shard_body() or _is_vmap_batched(x):
+        return x
+    resolved = resolve_axes(BATCH)
+    if x.ndim <= event_ndim or resolved is None:
+        return replicate(x)
+    axis = resolved[0]
+    mesh = jax.sharding.get_abstract_mesh()
+    size = 1
+    for name in axis if isinstance(axis, tuple) else (axis,):
+        size *= mesh.shape[name]
+    if x.shape[0] % size:
+        return replicate(x)
+    return _apply_spec(x, PartitionSpec(axis, *(None,) * (x.ndim - 1)))
 
 
 def _apply_spec(x: jax.Array, spec: PartitionSpec) -> jax.Array:
