@@ -107,6 +107,14 @@ def _active_mesh():
 MeshAxis = Any
 
 
+def _manual_axes(mesh) -> frozenset:
+    return frozenset(
+        name
+        for name, kind in zip(mesh.axis_names, mesh.axis_types, strict=True)
+        if kind == AxisType.Manual
+    )
+
+
 def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[MeshAxis], ...]]:
     """Map logical axis names to physical mesh axes.
 
@@ -120,10 +128,13 @@ def resolve_axes(*axes: Optional[str]) -> Optional[Tuple[Optional[MeshAxis], ...
         return None
 
     rules = dict(_flax_spmd.get_logical_axis_rules() or default_rules())
+    # Axes already made Manual by an enclosing shard_map are per-device there.
+    manual = _manual_axes(mesh)
     resolved = tuple(
         mesh_axis
         if (mesh_axis := rules.get(name) if name is not None else None) is not None
         and mesh.shape.get(mesh_axis, 1) > 1
+        and mesh_axis not in manual
         else None
         for name in axes
     )
@@ -185,13 +196,19 @@ def _apply_spec(x: jax.Array, spec: PartitionSpec) -> jax.Array:
 
     Explicit-axes meshes require ``jax.sharding.reshard``; Auto axes use
     ``jax.lax.with_sharding_constraint`` (mirrors flax.core.spmd handling).
-    Under Manual axes (inside shard_map / custom_partitioning per-shard
-    bodies) constraints are meaningless — the code already runs per-shard —
-    so this is a no-op there.
+    Manual axes (inside shard_map / custom_partitioning per-shard bodies)
+    already run per shard, so ``spec`` must not name them (resolve_axes
+    skips them); a body that is manual over every non-trivial axis no-ops.
+    Inside a ``shard_map`` over some axes only (``axis_names``), the
+    constraint still applies to the remaining Auto / Explicit axes.
     """
     mesh = jax.sharding.get_abstract_mesh()
-    axis_types = set(mesh.axis_types)
-    if AxisType.Manual in axis_types:
+    axis_types = {
+        kind
+        for kind, size in zip(mesh.axis_types, mesh.axis_sizes, strict=True)
+        if kind != AxisType.Manual and size > 1
+    }
+    if not axis_types:
         return x
     if axis_types == {AxisType.Explicit}:
         return jax.sharding.reshard(x, spec)

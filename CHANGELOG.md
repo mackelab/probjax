@@ -193,6 +193,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the newest release in it
 
 ### Changed
+- `MoELayer` routes each data shard's tokens on its own device when the batch
+  is sharded over a data mesh axis (`local_routing=True`, the default;
+  GShard-style groups through `jax.shard_map`). Global routing all-gathered
+  the routing ids and all-reduced the permuted token buffers several times per
+  step, so two PCIe GPUs ran slower than one (weak-scaling efficiency
+  0.2-0.3); per-shard routing leaves only the parameter-gradient all-reduce
+  (0.78-0.84 for a dropless layer at 16k-32k tokens per GPU). `"dropless"` and
+  `"dense"` outputs and gradients are unchanged; with `"capacity"` the capacity
+  now holds per shard. `MoEAux` statistics stay global-batch (summed over
+  shards). Falls back to global routing under `vmap`, for batches that do not
+  split evenly, or with `local_routing=False`
+- `probjax.nn.sharding.constrain`/`replicate`/`resolve_axes` inside a
+  `shard_map` over a subset of the mesh axes now skip the manual axes and still
+  constrain the remaining Auto/Explicit ones (they used to no-op entirely)
 - **Breaking:** `nn.io_util` moved to the `nn.data` package (`dataloader`,
   `datasets`, `prefetch`, `transforms`) and `probjax.nn.io_util` is removed;
   import from `probjax.nn.data` (`probjax.nn.DataLoader` and

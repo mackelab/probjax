@@ -87,6 +87,10 @@ def test_moe_sharded_matches_unsharded(sparse):
 
     reference = MoELayer(**kwargs, sparse=sparse, rngs=nnx.Rngs(42))
     y_ref, aux_ref = reference(x, return_aux=True)
+    if sparse:
+        # Each data shard routes its own tokens with its own capacity
+        # (tests/test_moe_mesh.py); the balance loss stays global.
+        y_ref = jnp.concatenate([reference(x[:2]), reference(x[2:])])
 
     xs = jax.device_put(x, NamedSharding(mesh, P("data", None, None)))
     with jax.set_mesh(mesh):
